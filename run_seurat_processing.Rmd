@@ -1,0 +1,241 @@
+---
+title: "run_seurat_preprocessig"
+output: html_document
+date: "2025-06-26"
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{r}
+rootdir="/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+#setwd(rootdir)  # Set this to correct location
+
+source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+```
+
+
+# QC 
+
+```{r qc, eval=FALSE}
+res_ctrl_iso<-perform_Seurat_QC("ctrl",
+                                counts_ctrl$iso,
+                                type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                                max.features =2000,
+                                min.features = 200,
+                                min.counts = 400,
+                                max.counts = 5000,
+                                MT = 10,
+                                npc = 15,
+                                output_path=paste0(rootdir,"/QC")
+)
+res_ctrl_iso$seu_obj
+res_ctrl_iso$features_before
+res_ctrl_iso$features_after
+res_ctrl_iso$mt_before
+res_ctrl_iso$mt_after
+res_ctrl_iso$scatter
+seurat_ctrl_iso<-res_ctrl_iso$seu_obj
+
+res_ctrl_gene<-perform_Seurat_QC("ctrl",
+                                 counts_ctrl$gene,
+                                 type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                                 max.features =2000,
+                                 min.features = 200,
+                                 min.counts = 400,
+                                 max.counts = 5000,
+                                 MT = 10,
+                                 npc = 15,
+                                 output_path=paste0(rootdir,"/QC")
+)
+res_ctrl_gene$seu_obj
+res_ctrl_gene$features_before
+res_ctrl_gene$features_after
+res_ctrl_gene$mt_before
+res_ctrl_gene$mt_after
+res_ctrl_gene$scatter
+seurat_ctrl_gene<-res_ctrl_gene$seu_obj
+
+
+
+#r S24_seu}
+res_S24_iso<-perform_Seurat_QC("S24",
+                               counts_S24$iso,
+                               type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                               max.features =2000,
+                               min.features = 200,
+                               min.counts = 400,
+                               max.counts = 5000,
+                               MT = 10,
+                               npc = 15,
+                               output_path=paste0(rootdir,"/QC")
+)
+
+res_S24_iso$seu_obj
+res_S24_iso$features_before
+res_S24_iso$features_after
+res_S24_iso$mt_before
+res_S24_iso$mt_after
+res_S24_iso$scatter
+seurat_S24_iso<-res_S24_iso$seu_obj
+
+res_S24_gene<-perform_Seurat_QC("S24",
+                                counts_S24$gene,
+                                type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                                max.features =2000,
+                                min.features = 200,
+                                min.counts = 400,
+                                max.counts = 5000,
+                                MT = 10,
+                                npc = 15,
+                                output_path=paste0(rootdir,"/QC")
+)
+res_S24_gene$seu_obj
+res_S24_gene$features_before
+res_S24_gene$features_after
+res_S24_gene$mt_before
+res_S24_gene$mt_after
+res_S24_gene$scatter
+seurat_S24_gene<-res_S24_gene$seu_obj
+
+
+
+#r R_seu}
+res_R_iso<-perform_Seurat_QC("R",
+                             counts_R$iso,
+                             type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                             max.features =2000,
+                             min.features = 200,
+                             min.counts = 400,
+                             max.counts = 5000,
+                             MT = 10,
+                             npc = 15,
+                             output_path=paste0(rootdir,"/QC")
+)
+res_R_iso$seu_obj
+res_R_iso$features_before
+res_R_iso$features_after
+res_R_iso$mt_before
+res_R_iso$mt_after
+res_R_iso$scatter
+seurat_R_iso<-res_R_iso$seu_obj
+
+res_R_gene<-perform_Seurat_QC("R",
+                              counts_R$gene,
+                              type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                              max.features =2000,
+                              min.features = 200,
+                              min.counts = 400,
+                              max.counts = 5000,
+                              MT = 10,
+                              npc = 15,
+                              output_path=paste0(rootdir,"/QC")
+)
+
+res_R_gene$seu_obj
+res_R_gene$features_before
+res_R_gene$features_after
+res_R_gene$mt_before
+res_R_gene$mt_after
+res_R_gene$scatter
+seurat_R_gene<-res_R_gene$seu_obj
+```
+
+
+# Loading the objects and general stats
+
+```{r load}
+seurat_ctrl_iso<-readRDS(paste0(rootdir,"/QC/seu_obj_ctrl_isoform.rds"))
+seurat_S24_iso<-readRDS(paste0(rootdir,"/QC/seu_obj_S24_isoform.rds"))
+seurat_R_iso<-readRDS(paste0(rootdir,"/QC/seu_obj_R_isoform.rds"))
+
+```
+
+Some general statistics to visualize the number of different isoforms per gene accross the samples, and the genes with the most different isoforms. 
+```{r sample_stats}
+
+seu_objects<-list(seurat_ctrl_iso,seurat_S24_iso,seurat_R_iso)
+sample_names<-list("ctrl","S24","R")
+
+
+map2(seu_objects, sample_names, number_of_isoforms_per_gene)
+map2(seu_objects, sample_names, top10_gene_with_most_iso)
+  
+
+```
+
+
+# Merge, integration and cell cycle regression
+
+## transcript level
+
+```{r merge_iso}
+seu_objects<-list(seurat_ctrl_iso,seurat_S24_iso,seurat_R_iso)
+sample_names<-list("ctrl","S24","R")
+
+merged_iso<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                 seu_objects, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+```
+
+And with integration:
+```{r}
+seu_objects<-list(seurat_ctrl_iso,seurat_S24_iso,seurat_R_iso)
+sample_names<-list("ctrl","S24","R")
+
+merged_iso<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                 seu_objects, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+```
+
+
+The same global stats on the merged objects:
+
+```{r glob_stats}
+number_of_isoforms_per_gene(merged_iso,"merged")
+top10_gene_with_most_iso(merged_iso,"merged")
+```
+
+## gene level
+
+```{r}
+seurat_ctrl_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_ctrl_gene.rds"))
+seurat_S24_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_S24_gene.rds"))
+seurat_R_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_R_gene.rds"))
+```
+
+```{r merge_gene}
+seu_objects<-list(seurat_ctrl_gene,seurat_S24_gene,seurat_R_gene)
+sample_names<-list("ctrl","S24","R")
+merged_gene<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                  seu_objects, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+
+
+```
+And with integration:
+```{r}
+seu_objects<-list(seurat_ctrl_gene,seurat_S24_gene,seurat_R_gene)
+sample_names<-list("ctrl","S24","R")
+merged_gene<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                  seu_objects, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+
+
+```
+

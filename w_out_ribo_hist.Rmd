@@ -1,0 +1,705 @@
+---
+title: "w_out_ribo_hist"
+output: html_document
+date: "2025-07-09"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+dir.create("/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist")
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist"
+setwd(rootdir)  # Set this to correct location
+#source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R")
+
+```
+
+Since the previous results were polluted with mostly ribosomal and histonic genes, even after regressing them out, we will try to remove these completly from the expression matrix. 
+We will start from the QC'ed individual seurat objects, remove histonic and ribosomal genes and preproces as done before without integration. ( merge, SCT normalisation, clustering and UMAP). 
+
+The aim is to identify an apoptotic-cells-rich cluster thanks to: DEA between clusters, enrichiment analysis and structure analysis with Isoviz of the transcripts of differentially expressed genes. 
+
+# Removing ribosomal and histonic genes
+
+/scratch/nautilus/users/edenis2023@ec-nantes.fr/w_out_ribo_hist
+
+Load the objects:
+```{r}
+repertoire <-"/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/QC"
+
+
+# Lister tous les fichiers .rds dans ce dossier
+fichiers_rds_gene <- list.files(path = repertoire, pattern = "\\gene.rds$", full.names = TRUE)
+fichiers_rds_iso <- list.files(path = repertoire, pattern = "\\isoform.rds$", full.names = TRUE)
+
+# Charger tous les fichiers avec readRDS et les stocker dans une liste
+liste_objets_gene <- lapply(fichiers_rds_gene, readRDS)
+liste_objets_iso <- lapply(fichiers_rds_iso, readRDS)
+
+# (Optionnel) Nommer les éléments de la liste avec les noms de fichiers sans extension
+names(liste_objets_gene) <- tools::file_path_sans_ext(basename(fichiers_rds_gene))
+names(liste_objets_iso) <- tools::file_path_sans_ext(basename(fichiers_rds_iso))
+
+```
+
+compute the number of isoform per gene on the list (gene we plan to remove)
+
+```{r}
+tab<-read_csv("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/analyses/merged_gene_most_iso.csv")
+
+tab_histo<-tab[tab$gene_name %in% histo_genes,]
+write_csv(tab_histo, file="/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/results_rapport/1.2.ribo_histo/hist.csv")
+
+tab_ribo<-tab[tab$gene_name %in% ribosomal_genes,]
+write_csv(tab_ribo, file="/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/results_rapport/1.2.ribo_histo/ribo.csv")
+```
+
+
+remove ribosomal and histonic genes:
+```{r}
+histo<-read.csv("/home/inserm-root/Téléchargements/liste_genes_histones.csv")
+
+histo_genes<-histo |> pull(Gene_Symbol)
+
+ribosomal_genes <- c(
+  "RPSA", "RPS2", "RPS3", "RPS3A", "RPS4X", "RPS4Y", "RPS5", "RPS6", "RPS7", "RPS8", 
+  "RPS9", "RPS10", "RPS11", "RPS12", "RPS13", "RPS14", "RPS15", "RPS15A", "RPS16", 
+  "RPS17", "RPS18", "RPS19", "RPS20", "RPS21", "RPS23", "RPS24", "RPS25", "RPS26", 
+  "RPS27", "RPS27A", "RPS28", "RPS29", 
+  "RPL3", "RPL4", "RPL5", "RPL6", "RPL7", "RPL7A", "RPL8", "RPL9", "RPL10", "RPL10A", 
+  "RPL11", "RPL12", "RPL13", "RPL13A", "RPL14", "RPL15", "RPL17", "RPL18", "RPL18A", 
+  "RPL19", "RPL21", "RPL22", "RPL23", "RPL23A", "RPL24", "RPL26", "RPL27", "RPL27A", 
+  "RPL28", "RPL29", "RPL30", "RPL31", "RPL32", "RPL34", "RPL35", "RPL35A", "RPL36", 
+  "RPL36A", "RPL37", "RPL37A", "RPL38", "RPL39", "RPL40", "RPL41"
+)
+list_clean_gene<-lapply(liste_objets_gene, function(x) {
+  genes_to_keep <- setdiff(rownames(x), c(histo_genes, ribosomal_genes))
+  seurat_obj_filtered_gene <- subset(x, features = genes_to_keep)
+  return(seurat_obj_filtered_gene)
+  
+})
+
+list_clean_iso<-lapply(liste_objets_iso, function(x) {
+  genes_to_remove <-c(histo_genes, ribosomal_genes)
+  regex_pattern <- paste(genes_to_remove, collapse = "|")
+  iso_to_keep <-rownames(x)[!grepl(regex_pattern, rownames(x))]
+  seurat_obj_filtered_iso <- subset(x, features = iso_to_keep)
+  return(seurat_obj_filtered_iso)
+  
+})
+
+saveRDS(list_clean_gene,paste0(rootdir, "/list_clean_gene.rds"))
+saveRDS(list_clean_iso, paste0(rootdir, "/list_clean_iso.rds"))
+```
+
+
+# Merge and regress out the objects
+
+The seurat objects will now be merged. The merge and run_regression functions are adapted to regress on cell cycle genes only.
+
+
+```{r}
+run_regression_and_merge_v2 <- function(sample_names, # a list of sample-names in the right order
+                                     seu_objects, # a list of seurat objects, one for each sample
+                                     type = "isoform", #set to 'gene' or 'isoform'
+                                     output_path = paste0(rootdir, "/merge_integration"),
+                                     integrateRPCA = FALSE) {
+  
+  dir.create(paste0(output_path, "/cell_cycle_regression"), recursive = TRUE, showWarnings = FALSE)
+  
+ 
+  integ_suffix <- if (integrateRPCA) "_integrated" else ""
+  
+  message("Starting preprocessing of individual samples")
+  
+  seu_objects <- lapply(seu_objects, function(x) {
+    DefaultAssay(x) <- "RNA"
+    
+    if (type == "isoform") {
+      features_df <- data.frame(feature = Features(x)) %>%
+        mutate(
+          gene_name = sub(".*--", "", feature),
+          transcript_id = sub("--.*", "", feature)
+        )
+      s.features <- features_df %>%
+        right_join(data.frame(gene_name = cc.genes$s.genes), by = "gene_name") %>% pull(feature)
+      g2m.features <- features_df %>%
+        right_join(data.frame(gene_name = cc.genes$g2m.genes), by = "gene_name") %>% pull(feature)
+     
+    } else if (type == "gene") {
+      s.features <- cc.genes$s.genes
+      g2m.features <- cc.genes$g2m.genes
+      
+    } else {
+      stop("type must be 'isoform' or 'gene'")
+    }
+    
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst")
+    x <- ScaleData(x, features = rownames(x))
+    x <- RunPCA(x, features = VariableFeatures(x))
+    x <- CellCycleScoring(x, s.features = s.features, g2m.features = g2m.features, set.ident = TRUE)
+    
+    x <- SCTransform(x, vars.to.regress = c("S.Score", "G2M.Score"))
+    
+    return(x)
+  })
+  
+  message("Merging Seurat objects")
+  merged_obj <- merge(seu_objects[[1]],
+                      y = seu_objects[-1],
+                      add.cell.ids = sample_names,
+                      merge.data = TRUE)
+  
+  if (integrateRPCA) {
+    message("Running RPCA integration")
+    merged_obj <- SCTransform(merged_obj, vars.to.regress = c("S.Score", "G2M.Score"))
+    merged_obj <- RunPCA(merged_obj)
+    
+    library(future)
+    oopts <- options()
+    options(future.globals.maxSize = 15 * 1024^3)
+    on.exit(options(oopts))
+    
+    merged_obj <- IntegrateLayers(merged_obj,
+                                  method = RPCAIntegration,
+                                  orig.reduction = "pca",
+                                  new.reduction = "integrated.rpca",
+                                  normalization.method = "SCT",
+                                  verbose = TRUE)
+    
+    merged_obj <- FindNeighbors(merged_obj, reduction = "integrated.rpca", dims = 1:15)
+    merged_obj <- FindClusters(merged_obj, resolution = 0.5, cluster.name = "rpca_clusters")
+    merged_obj <- RunUMAP(merged_obj, reduction = "integrated.rpca", dims = 1:15, reduction.name = "umap.rpca")
+  } else {
+    message("Running merged object's processing, no integration")
+    merged_obj <- SCTransform(merged_obj, vars.to.regress = c("S.Score", "G2M.Score"))
+    merged_obj <- RunPCA(merged_obj, assay = "SCT")
+    merged_obj <- FindNeighbors(merged_obj, dims = 1:15)
+    merged_obj <- FindClusters(merged_obj,resolution = 0.5, cluster.name = "clusters")
+    merged_obj <- RunUMAP(merged_obj, reduction = "pca", dims = 1:15, reduction.name = "umap")
+  }
+  merged_obj<-PrepSCTFindMarkers(merged_obj, assay = "SCT", verbose = TRUE)
+  saveRDS(merged_obj, file = paste0(output_path, "/cell_cycle_regression/regressed_obj_", type, integ_suffix, ".rds"))
+  message(integ_suffix," object saved in:",output_path, "/cell_cycle_regression/regressed_obj_", type, integ_suffix, ".rds")
+  
+  # ----- Visualization -----
+  message("Plotting results")
+  plot_phase <- DimPlot(merged_obj, group.by = "Phase") +
+    labs(title = paste("UMAP - Cell Cycle Phase after regression", type, integ_suffix)) +
+    theme(axis.title = element_text(size = 18), legend.text = element_text(size = 18)) +
+    guides(colour = guide_legend(override.aes = list(size = 10)))
+  
+  ggsave(paste0(output_path, "/cell_cycle_regression/dimplot_phase_after_reg", type, integ_suffix, ".jpg"),
+         plot = plot_phase, height = 7, width = 12)
+  
+ 
+  
+  #print(plot_phase)
+
+  
+
+  # Optional: integrated dimplot
+  if (integrateRPCA) {
+    dimplot <- DimPlot(merged_obj, reduction = "umap.rpca", group.by = c("sample", "rpca_clusters"),
+                       combine = TRUE, label.size = 2) +
+      labs(title = paste("Integrated UMAP - RPCA", type) )+
+      theme_minimal()
+    
+    ggsave(paste0(output_path, "/cell_cycle_regression/merged_integrated_", type,"_dimplot.png"), plot = dimplot)
+    #print(dimplot)
+    } else {
+      dplot <- DimPlot(merged_obj, group.by = "clusters", "sample") +
+        labs(title = paste("UMAP colored by clusters",integ_suffix, type))
+      ggsave(paste0(output_path, "/cell_cycle_regression/dimplot_clusters_", type,integ_suffix,".png"), plot = dplot)
+      #print(dplot)
+      
+    }
+ 
+  # Sample-level plot
+  dplot <- DimPlot(merged_obj, group.by = "sample") +
+    labs(title = paste("UMAP colored by sample",integ_suffix,type))
+  ggsave(paste0(output_path, "/cell_cycle_regression/dimplot_sample_", type,integ_suffix,".png"), plot = dplot)
+  #print(dplot)
+  
+  
+  return(merged_obj)
+}
+```
+
+
+```{r merge_iso}
+
+sample_names<-list("ctrl","R","S24")
+
+merged_iso<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                 list_clean_iso, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+```
+
+
+
+```{r merge_gene}
+
+sample_names<-list("ctrl","R","S24")
+merged_gene<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                  list_clean_gene, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+
+
+```
+
+
+
+```{r}
+dir.create(paste0(rootdir,"/analyses"))
+plot_venn(merged_gene,"gene")
+plot_venn(merged_iso,"isoform")
+```
+
+
+```{r}
+dp<-DimPlot(merged_iso, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at isoform level")
+ggsave(plot=dp, filename = paste0(rootdir,"/analyses/dplot_merged_iso.png"))
+
+dp<-DimPlot(merged_gene, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at gene level")
+ggsave(plot=dp, filename = paste0(rootdir,"/analyses/dplot_merged_gene.png"))
+```
+
+
+# integration
+
+```{r int_iso}
+
+sample_names<-list("ctrl","R","S24")
+
+integ_iso<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                 list_clean_iso, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+```
+
+
+
+```{r int_gene}
+
+sample_names<-list("ctrl","R","S24")
+integ_gene<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                  list_clean_gene, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+
+
+```
+
+```{r}
+plot_venn(merged_gene,"gene_integ")
+plot_venn(merged_iso,"isoform_integ")
+```
+
+```{r}
+dp<-DimPlot(integ_iso, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at isoform level")
+ggsave(plot=dp, filename = paste0(rootdir,"/analyses/dplot_integ_iso.png"))
+
+dp<-DimPlot(integ_gene, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at gene level")
+ggsave(plot=dp, filename = paste0(rootdir,"/analyses/dplot_integ_gene.png"))
+```
+
+
+# DE analysis 
+
+DE analysis is performed across clusters
+
+function for a merged object:
+```{r}
+DE_clusters_merged<-function(seu_obj, # an unintegrated seurat object
+                      #sample_names, # a list of the sample names
+                      outdir=paste0(rootdir,"/DE"),
+                      topn=10,
+                      type="isoform"
+){
+  dir.create(paste0(rootdir,"/DE"))
+  # split our object into a list of 3 objects, one for each sample
+  so_list = SplitObject(seu_obj,split.by = "sample")
+  names(so_list) <- sapply(so_list, function(x) {return(unique(x$sample))})
+  
+  #run DE on each sample to find specific markers for each cluster in the three samples
+  markers_list <- lapply(so_list, function(x) {
+    x$cluster<-Idents(x)
+    all_markers<- FindAllMarkers(x, do.print = FALSE,
+                                 group.by="clusters", 
+                                 assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.20, only.pos = FALSE) %>% 
+      dplyr::filter(p_val_adj < 0.05)
+    
+    head(all_markers)
+    return(all_markers)
+  })
+  
+  names(markers_list) = names(so_list)
+  
+  
+  # one heatmap will be generated for each sample, featuring the top markers for each cluster in the given sample
+  heatmap_list<-lapply(names(markers_list), function(x) { # x is the sample's name
+    write.csv(markers_list[[x]], file=paste0(outdir,"/findallmarkers_cluster_",x,"_",type,'.csv'))
+    #plot heatmaps
+    top_markers<-markers_list[[x]] %>%
+      group_by(cluster) %>%
+      dplyr::filter(avg_log2FC > 1) %>%
+      slice_head(n = topn) %>%
+      ungroup() 
+    
+    heatmap<-DoHeatmap(so_list[[x]],
+                       features = top_markers$gene,
+                       assay = "SCT",
+                       slot="data") + ggtitle(paste0("merged markers for each cluster ",x," at ",type," level") )
+    
+    ggsave(filename=paste0(outdir,"/heatmap_",x,"_",type,".png"),heatmap)
+    #print(heatmap)
+    return(heatmap)
+  })
+  names(heatmap_list)=names(markers_list)
+  res=list()
+  res$markers=markers_list
+  res$heatmaps=heatmap_list
+  
+  return(res)
+}
+
+```
+
+function for an integrated object:
+```{r}
+DE_clusters<-function(seu_obj, # an integrated seurat object
+                      #sample_names, # a list of the sample names
+                      outdir=paste0(rootdir,"/DE"),
+                      topn=10,
+                      type="isoform"
+){
+  
+  # split our object into a list of 3 objects, one for each sample
+  so_list = SplitObject(seu_obj,split.by = "sample")
+  names(so_list) <- sapply(so_list, function(x) {return(unique(x$sample))})
+  
+  #run DE on each sample to find specific markers for each cluster in the three samples
+  markers_list <- lapply(so_list, function(x) {
+    x$cluster<-Idents(x)
+    all_markers<- FindAllMarkers(x, do.print = FALSE,
+                                 group.by="rpca_clusters", 
+                                 assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.20, only.pos = FALSE) %>% 
+      dplyr::filter(p_val_adj < 0.05)
+    
+    head(all_markers)
+    return(all_markers)
+  })
+  
+  names(markers_list) = names(so_list)
+  
+  
+  # one heatmap will be generated for each sample, featuring the top markers for each cluster in the given sample
+  heatmap_list<-lapply(names(markers_list), function(x) { # x is the sample's name
+    write.csv(markers_list[[x]], file=paste0(outdir,"/findallmarkers_cluster_integrated",x,"_",type,'.csv'))
+    #plot heatmaps
+    top_markers<-markers_list[[x]] %>%
+      group_by(cluster) %>%
+      dplyr::filter(avg_log2FC > 1) %>%
+      slice_head(n = topn) %>%
+      ungroup() 
+    
+    heatmap<-DoHeatmap(so_list[[x]],
+                       features = top_markers$gene,
+                       assay = "SCT",
+                       slot="data") + ggtitle(paste0("Top markers for each integrated cluster  ",x," at ",type," level") )
+    
+    ggsave(filename=paste0(outdir,"/heatmap_integrated_",x,"_",type,".png"),heatmap)
+    #print(heatmap)
+    return(heatmap)
+  })
+  names(heatmap_list)=names(markers_list)
+  res=list()
+  res$markers=markers_list
+  res$heatmaps=heatmap_list
+  
+  return(res)
+}
+```
+
+```{r}
+merged_iso<-readRDS("/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/w_out_ribo_hist/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds")
+merged_gene<-readRDS("/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/w_out_ribo_hist/merge_integration/cell_cycle_regression/regressed_obj_gene.rds")
+```
+
+
+```{r iso_de_cluster}
+res_de_iso<-DE_clusters_merged(merged_iso, 
+                      #outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=15,
+                      type="isoform")
+
+
+```
+
+
+```{r gene_de_cluster}
+res_de_gene<-DE_clusters_merged(merged_gene, 
+                      #outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=10,
+                      type="gene")
+
+```
+
+```{r}
+integ_iso<-readRDS("./merge_integration/cell_cycle_regression/regressed_obj_isoform_integrated.rds")
+integ_gene<-readRDS("./merge_integration/cell_cycle_regression/regressed_obj_gene_integrated.rds")
+ou 
+integ_gene<-readRDS("/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/w_out_ribo_hist/merge_integration/cell_cycle_regression/regressed_obj_gene_integrated.rds")
+```
+
+```{r iso_de_cluster_integ}
+res_de_iso<-DE_clusters(integ_iso, 
+                      #outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=10,
+                      type="isoform")
+
+
+```
+
+
+```{r gene_de_cluster_integ}
+res_de_gene<-DE_clusters(integ_gene, 
+                      #outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=10,
+                      type="gene")
+
+```
+# impact intégration: mélange des échantillons dans les clusters
+
+```{r}
+
+
+
+props<-lapply(c(merged_gene,integ_gene), function(x){ 
+  md<-x[[]]
+  # 2. Compter les cellules par cluster et par échantillon
+counts <- md %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+# 3. Calculer la proportion dans chaque cluster
+props <- counts %>%
+  group_by(seurat_clusters) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+  return(props)
+  })
+
+props[[1]]$dataset<-"merged gene"
+props[[2]]$dataset<-"integrated gene"
+
+combined_props <- bind_rows(props)
+
+# Tracer les histogrammes comparés
+ggplot(combined_props, aes(x = seurat_clusters, y = proportion, fill = sample)) +
+  geom_bar(stat = "identity", position =  "dodge") +  # Barre côte à côte
+  facet_wrap(~dataset) +  # Un graphique par dataset
+  ylab("Proportion") +
+  xlab("Cluster") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  ggtitle("Comparaison des proportions d'échantillons par cluster merged/integrated")
+
+
+
+```
+
+# impact integration: info biologique
+
+```{r}
+# confusion matrix gene
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("merged_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(integ_gene$rpca_clusters)
+colnames(df2)<-c("rpca_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+list<-list(df$merged_clusters,df$rpca_clusters)
+names(list)<-c("merged","integrated")
+
+confusion<-table(list)
+confusion
+
+
+```
+
+     integrated
+merged    0    1    2    3    4    5
+     0 5819  355  606  114   58    3
+     1  291 2808  183 1699   35    7
+     2 3064  434    6  147   16   10
+     3  105   36 2846  144    8    1
+     4   21   31   16    8  757    0
+     5   16    7   10  718    0   42
+     6   26   57    1    0    0  303
+0 0 0/2
+1 1/3 1/1(5)
+2 0 0(/2)
+3 2 3<-
+4 4 4<-
+5 3 1(5)
+6 5 6<-
+
+d'abord test sur ceux qui sont bien mappés: 3, 4 et 6
+
+```{r}
+list_int<-list("3"=2,"4"=4,"6"=5)
+
+for (cluster_m in names(list_int)) {
+  cluster_i<-list_int[cluster_m]
+
+markers_merged <- FindMarkers(merged_gene, ident.1 = cluster_m, group.by = 'clusters')
+markers_integrated<- FindMarkers(integ_gene, ident.1 = cluster_i, group.by = 'rpca_clusters')
+
+list<-lapply(list(markers_merged,markers_integrated),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+list_markers_integrated<-list[[2]]
+
+dir.create(paste0(rootdir,"/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample=paste0("merged",cluster_m),
+                      output_path=paste0(rootdir,"/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+
+enriched_integrated<-run_enrichR(list_markers_integrated,
+                      sample=paste0("integrated",cluster_i),
+                      output_path=paste0(rootdir,"/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+
+common_terms<-data.frame(row.names = c("GO_Molecular_Function_2025", "GO_Cellular_Component_2025", 
+         "GO_Biological_Process_2025","Reactome_Pathways_2024"))
+common_terms$count<-NA
+for (x in rownames(common_terms)) {
+  top_merged <- enriched_merged[[x]] |> 
+    as.data.frame() |> 
+    slice_min(order_by = P.value, n = 20) |> 
+    pull(Term)
+  
+  top_integ <- enriched_integrated[[x]] |> 
+    as.data.frame() |> 
+    slice_min(order_by = P.value, n = 20) |> 
+    pull(Term)
+  
+  intersection_count <- length(intersect(top_merged, top_integ))
+  message(paste(intersection_count, "/ 20 termes en commun pour", x))
+  
+  common_terms[x, "count"] <- intersection_count
+}
+print(common_terms)
+}
+```
+
+termes en commun 17/10/13 reactome
+# Cluster identification
+
+Si on continue sur le merged:
+## Pathway enrichment analysis
+
+```{r}
+for (cluster_m in c(0,2:6)) {
+
+
+markers_merged <- FindMarkers(merged_gene, ident.1 = cluster_m, group.by = 'clusters')
+save.csv(markers_merged,paste0(rootdir,"/enrich_cluster/merged_",cluster_m,"/DE_gene_cluster",cluster_m,"vs_all.csv"))
+
+list<-lapply(list(markers_merged),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+
+
+#dir.create(paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m))
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample=paste0("merged",cluster_m),
+                      output_path=paste0(rootdir,"/enrich_cluster/merged_",cluster_m))
+
+
+}
+
+
+```
+
+on a clairement bcp d'apopotose qui revient dans le 4merged
+
+et dans le integrated_gene:
+
+```{r}
+for (cluster_m in c(0,2:5)) {
+
+
+markers_merged <- FindMarkers(merged_gene, ident.1 = cluster_m, group.by = 'clusters')
+#save.csv(markers_merged,paste0("DE_gene_cluster",cluster_m,"vs_all_no_ribo.csv"))
+
+list<-lapply(list(markers_merged),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+
+
+#dir.create(paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m))
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample=paste0("integrated",cluster_m),
+                      output_path=paste0(rootdir,"/enrich_cluster/integrated_",cluster_m))
+
+
+}
+
+```
+
+
+
+pareil bcp d'apoptose et de mito dans le 4 
+
+
+
+
+
+

@@ -1,0 +1,199 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+project="/media/labct/P4/Single_cell_rna_seq_analyses_eline/project"
+setwd(rootdir)  # Set this to correct location
+#source(paste0(project,"/R/seurat_processing.R"))
+source(paste0(project,"/R/DE-analysis.R"))
+source(paste0(project,"/R/visualisation_tools_and_pathway_analysis.R"))
+
+
+```
+
+
+On a pu montrer que l'on pouvait négliger l'impact de l'intégration sur le clustering. On poursuit donc l'analyse sur les données non intégrées. Le clustering a mis en évidence certains clusters, la lignée n'est pas homogène. On identifie en particulier le cluster *1* de cellules en phase M, et le cluster *5* dans l'objet "gene-level", associé à des mécanismes apoptotiques et à ErbB2. 
+On veut voir:
+- si cette hétérogenité se voit aussi avec les transcripts.
+- si on peut associer les clusters genes à des clusters transcripts existants
+- si au sein des clusters d'intérêt identifiés, on peut identifier des transcrits différentiellement exprimés entre les différents échantillons. Et si oui, si ces transcrits sont présents également dans d'autres clusters. 
+
+
+Chargement de l'objet et visualisation UMAP des clusters d'intérets
+```{r}
+merged_iso<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene.rds"))
+
+DimPlot(merged, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at gene level")
+DimPlot(merged_iso, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at isoform level")
+
+```
+
+
+Le cluster 1 contient des cellules provenant des 3 échantillons alors que le clusters 5 contient majoritaitement des cellules resistantes. 
+
+
+Une matrice de confusion va permettre de voir si on peut associer des clusters "gènes" avec des clusters "transcripts":
+```{r}
+# confusion matrix
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+list<-list(df$gene_clusters,df$iso_clusters)
+names(list)<-c("gene","iso")
+
+confusion<-table(list)
+confusion
+```
+
+Le cluster gene1 est majoritairent composé des mêmes cellules que le cluster iso2. Le cluster gene5 en revanche est dispatché dans les clusters iso0 1 2 et 6.
+
+
+On rajoute les annotations sur les clusters identifiés précédemment et on subset les objets. 
+
+```{r}
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+
+sub1<-subset(merged_iso, subset= gene_clusters==1 )
+sub1<-PrepSCTFindMarkers(sub1, verbose = TRUE)
+sub5<-subset(merged_iso, subset= gene_clusters==5 )
+sub5<-PrepSCTFindMarkers(sub5, verbose = TRUE)
+
+sub1
+sub5 
+
+DimPlot(sub1, group.by="sample")+labs(caption = "unintegrated cluster 1 subset at isoform level")
+DimPlot(sub5, group.by="sample")+labs(caption = "unintegrated cluster 5 subset at isoform level")
+```
+
+Etape suivante: DE_sample sur ces subsets pour comparer les transcripts exprimés dans les 3 conditions. 
+
+
+```{r}
+dir.create(paste0(rootdir, "/analyses/focus_cluster"))
+
+res1<-DE_samples(sub1, output_dir = paste0(rootdir, "/analyses/focus_cluster"), sample_name = "sub1")
+res5<-DE_samples(sub5, output_dir = paste0(rootdir, "/analyses/focus_cluster"), sample_name = "sub5")
+print(res1$heatmap)
+print(res5$heatmap)
+```
+
+On retrouve bcp de gènes ribosomaux comme avant le subset, et pas forcément de nouvelles info grâce au subset.
+
+Et si on se concentrait sur les gènes DE dans le cluster par rapport à toutes les autres cellules?
+
+L'objectif est d'identifier des gènes qui ne parraissent pas avoir un rôle dans la résistance/ l'apoptose mais dont les cellules resistantes expriment des isoformes qui ont un rôle différent du rôle de l'isoforme classique. 
+
+On extrait ces listes de gènes:
+
+```{r}
+markers_1 <- FindMarkers(merged_gene, ident.1 = 1, group.by = 'clusters')
+markers_5 <- FindMarkers(merged_gene, ident.1 = 5, group.by = 'clusters')
+
+list<-lapply(list(markers_1,markers_5),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 2)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_1<-list[[1]]
+list_markers_5<-list[[2]]
+```
+
+On extrait les isoformes DE de ces gènes en faisant intersection entre les listes d'isoformes significativement surexprimés et les gènes. 
+
+```{r}
+list_iso_1<-res1$markers |> mutate(gene_name = sub(".*--", "",gene)) |>
+  filter(gene_name %in% list_markers_1) |> pull(gene)
+
+list_iso_5<-res1$markers |> mutate(gene_name = sub(".*--", "",gene)) |>
+  filter(gene_name %in% list_markers_5) |> pull(gene)
+```
+
+Voir heatmap avec ces features: 
+
+```{r}
+DoHeatmap(sub1, slot="data", 
+                     assay="SCT",
+          
+                     features = list_iso_1, group.by = "sample") + labs(title = paste0("Isoformes DE des gènes de cluster 1"))
+
+for (i in seq(1, length(list_iso_5), by = 31)) {
+  print(DoHeatmap(sub5, slot="data", 
+                     assay="SCT",
+                     features = list_iso_5[i:min(i+30, length(list_iso_5))], group.by = "sample") + labs(title = paste0("Isoformes DE des gènes de cluster 5")))
+}
+
+list_iso_5
+```
+
+Isoviz can help exploring the isoforms and their functionnal impact:
+```{r}
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  merged_iso, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+dir.create(paste0(rootdir,"/analyses/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/analyses/isoviz/Pseudobulk_exp_merged_iso.csv"), row.names = FALSE)
+```
+
+```{r}
+knitr::include_graphics(paste0(rootdir,"/analyses/isoviz/IsoVis_ENSG00000143384.png"))
+knitr::include_graphics(paste0(rootdir,"/analyses/isoviz/IsoVis_ENSG00000171791.png"))
+knitr::include_graphics(paste0(rootdir,"/analyses/isoviz/IsoVis_ENSG00000213585(1).png"))
+```
+
+Pourrait servir pour identifier un gène dont un isoforme surexprimé dans R ou S24 a un domaine en plus ou en moins qui pourrait favoriser l'apoptose. 
+
+
+
+test enrich r: à quoi servent les gènes qui ont des transcripts différentiellement exprimés?
+
+```{r}
+list_gene_5<- sub(".*--", "",list_iso_5)
+dir.create(paste0(rootdir,"/analyses/cluster5"))
+run_enrichR(list_gene_5, "iso_de_sub5", output_path = paste0(rootdir,"/analyses/cluster5"))
+```
+pas super interessant

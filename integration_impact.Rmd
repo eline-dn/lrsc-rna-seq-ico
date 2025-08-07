@@ -1,0 +1,560 @@
+---
+title: "DE_sample_and_clusters"
+output: html_document
+date: "2025-06-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+setwd(rootdir)  # Set this to correct location
+#source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R")
+```
+
+
+# Load the objects 
+```{r}
+merged_iso<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds"))
+integrated_iso<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform_integrated.rds"))
+```
+
+```{r}
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene.rds"))
+integrated_gene<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene_integrated.rds"))
+
+```
+
+
+# UMAP visual inspection
+```{r}
+DimPlot(merged_iso, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at isoform level")
+
+DimPlot(integrated_iso, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at isoform level")
+```
+
+# Comparing the top variable Features
+## Plots
+
+bug pour le moment: variable features plots qui marchent pas
+```{r eval=FALSE}
+vfeat_merged <- VariableFeatures(merged_iso)
+vfeat_integ <- VariableFeatures(integrated_iso)
+
+top10_merged <- head(VariableFeatures(merged_iso), 20)
+top10_integ <- head(VariableFeatures(integrated_iso), 20)
+
+merged_gene<-readRDS("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/merge_integration/cell_cycle_regression/regressed_obj_gene.rds")
+ merged_gene <- FindVariableFeatures(merged_gene, assay="SCT", nfeatures = 2000)
+top10_merged <- head(VariableFeatures(merged_iso), 20)
+plot1_merged <- VariableFeaturePlot(merged_iso,assay="SCT")
+
+var <- c('gmean', 'variance', 'residual_variance')
+merged_iso[["SCT"]]@meta.features <- SCTResults(merged_iso[["SCT"]], slot = "feature.attributes")[, var] # erreur nombre de dimensions icorrect car SCTResults(merged_iso[["SCT"]], slot = "feature.attributes") est une liste de 3 tableaux qui contienent les "var"
+merged_iso[["SCT"]]@meta.features$variable <- FALSE
+merged_iso[["SCT"]]@meta.features[VariableFeatures(merged_iso[["SCT"]] ), "variable"] <- TRUE
+colnames(merged_iso[["SCT"]]@meta.features) <- paste0("sct.", colnames(merged_iso[["SCT"]]@meta.features) )
+VariableFeaturePlot(merged_iso, selection.method = "sct", assay = "SCT")
+
+
+
+# plot variable features with labels
+plot1_merged <- VariableFeaturePlot(merged_iso,assay="SCT")
+plot2_merged <- LabelPoints(plot = plot1, points = top10_merged, repel = TRUE)
+```
+
+## Venn Diagramms
+```{r}
+v_feat_list<-lapply(c(merged_iso,integrated_iso), function(x){
+  vfeat<- VariableFeatures(x)
+  top10 <- head(VariableFeatures(x), 20)
+  #plot1<- VariableFeaturePlot(x)
+  #plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+  return(vfeat)
+})
+names(v_feat_list)<-c("merged","integrated")
+```
+
+```{r}
+vd<-ggVennDiagram(v_feat_list) +labs(title = paste0("Overlapping top variables isoforms"))
+vd
+#ggsave(filename = paste0(rootdir,"/analyses/venn_",type,".png"),vd)
+  
+```
+
+compare top variable features: venn and enrichment
+
+peut être que la méthode d'intégration est faite pour en fait...
+
+# Identify conserved clusters before and after integration
+
+First strategy: try to identify clusters that have the same top markers:
+
+
+```{r}
+
+dir.create(paste0(rootdir,"/analyses/impact_integ"))
+
+res_de_iso_integ<-DE_clusters(integrated_iso, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="isoform")
+
+
+# et adaptation pour un objet pas intégré (qui n'a pas de "rpca_clusters")
+DE_clusters_merged<-function(seu_obj, # an unintegrated seurat object
+                      #sample_names, # a list of the sample names
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="isoform"
+){
+  
+  # split our object into a list of 3 objects, one for each sample
+  so_list = SplitObject(seu_obj,split.by = "sample")
+  names(so_list) <- sapply(so_list, function(x) {return(unique(x$sample))})
+  
+  #run DE on each sample to find specific markers for each cluster in the three samples
+  markers_list <- lapply(so_list, function(x) {
+    x$cluster<-Idents(x)
+    all_markers<- FindAllMarkers(x, do.print = FALSE,
+                                 group.by="clusters", 
+                                 assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.20, only.pos = FALSE) %>% 
+      dplyr::filter(p_val_adj < 0.05)
+    
+    head(all_markers)
+    return(all_markers)
+  })
+  
+  names(markers_list) = names(so_list)
+  
+  
+  # one heatmap will be generated for each sample, featuring the top markers for each cluster in the given sample
+  heatmap_list<-lapply(names(markers_list), function(x) { # x is the sample's name
+    
+    #plot heatmaps
+    top_markers<-markers_list[[x]] %>%
+      group_by(cluster) %>%
+      dplyr::filter(avg_log2FC > 1) %>%
+      slice_head(n = topn) %>%
+      ungroup() 
+    
+    heatmap<-DoHeatmap(so_list[[x]],
+                       features = top_markers$gene,
+                       assay = "SCT",
+                       slot="data") + ggtitle(paste0("merged markers for each cluster ",x," at ",type," level") )
+    
+    ggsave(filename=paste0(outdir,"/heatmap_",x,"_",type,".png"),heatmap)
+    print(heatmap)
+    return(heatmap)
+  })
+  names(heatmap_list)=names(markers_list)
+  res=list()
+  res$markers=markers_list
+  res$heatmaps=heatmap_list
+  
+  return(res)
+}
+
+res_de_iso_merged<-DE_clusters_merged(merged_iso, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="isoform")
+
+```
+
+
+For example: cluster 1 from integrated object and cluster 2 from merged seem to be similar 
+
+Vérification de la stabilité des clusters avec une matrice de confusion, pour voir si les cellules se regroupent au meme endroit
+Cela permet de voir quels clusters avant et après intégration partagent des cellules :
+```{r}
+df<-as.data.frame(merged_iso$clusters)
+colnames(df)<-c("merged_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(integrated_iso$rpca_clusters)
+colnames(df2)<-c("rpca_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+list<-list(df$merged_clusters,df$rpca_clusters)
+names(list)<-c("merged","integrated")
+
+confusion<-table(list)
+confusion
+
+```
+
+
+
+on garde les couples:
+(integ1,merged2)
+(integ4, merged3)
+
+
+maintenant on voit la liste des cellules présentes dans clusterx merged, on regarde l'overlap avec la liste des cellules de clusterx integ
+```{r}
+cell_list<-list(df[df$merged_clusters==2,"cell_names"],
+                df[df$rpca_clusters==1,"cell_names"])
+
+names(cell_list)<-c("merged","integrated")
+
+vd<-ggVennDiagram(cell_list) +labs(title = paste0("Overlapping cells between the two clusters"))
+vd
+```
+
+ne donne pas bcp plus d'info que la table de confusion.
+
+
+on veut maintenant voir si l'intégration fait perdre de l'info biologique.
+
+Problème posé :
+
+Tu veux comparer l’identité biologique (via DEGs et enrichment) de cluster_2 (non intégré) et cluster_1 (intégré).
+Mais ces clusters ne contiennent pas exactement les mêmes cellules → il y a des gains et pertes de cellules dues à l'intégration.
+
+=> faire les 2 Puis compare les résultats :
+
+    Les enrichissements biologiques sont-ils conservés ?
+
+    Voit-on de nouveaux signaux émerger dans le cluster intégré ?
+
+    Est-ce que les cellules ajoutées/supprimées modifient l’interprétation ?
+    
+    
+
+on oublie les cell de l'intersection, on va garder les clusters entiers pour avoir toute l'info biologique et éviter de biaiser les résultats. 
+
+```{r}
+integrated_iso<-PrepSCTFindMarkers(integrated_iso,assay="SCT")
+
+markers_merged <- FindMarkers(merged_iso, ident.1 = 2, group.by = 'clusters')
+markers_integrated<- FindMarkers(integrated_iso, ident.1 = 1, group.by = 'rpca_clusters')
+
+list<-lapply(list(markers_merged,markers_integrated),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+list_markers_integrated<-list[[2]]
+```
+
+enrichment
+```{r}
+
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample="merged2",
+                      output_path=paste0(rootdir,"/analyses/integration_impact"))
+
+enriched_integrated<-run_enrichR(list_markers_integrated,
+                      sample="integrated1",
+                      output_path=paste0(rootdir,"/analyses/integration_impact"))
+
+
+```
+
+
+
+not so relevant
+
+
+voir aussi avec les gènes
+
+
+# cluster isolation at gene level   
+
+
+# Versio propre de pourqui on travaille sur l'objet non intégré
+
+Sur le cluster qui nous intéresse, le 1, on a pas de différences biologiques dans les gènes qui sont exprimés
+
+```{r}
+merged<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene.rds"))
+integrated<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene_integrated.rds"))
+```
+    
+    
+
+```{r}
+DimPlot(merged, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at gene level")
+
+DimPlot(integrated, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at gene level")
+
+
+dir.create(paste0(rootdir,"/analyses/impact_integ"))
+
+res_de_iso_integ<-DE_clusters(integrated, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="gene")
+
+
+# et adaptation pour un objet pas intégré (qui n'a pas de "rpca_clusters")
+DE_clusters_merged<-function(seu_obj, # an unintegrated seurat object
+                      #sample_names, # a list of the sample names
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="isoform"
+){
+  
+  # split our object into a list of 3 objects, one for each sample
+  so_list = SplitObject(seu_obj,split.by = "sample")
+  names(so_list) <- sapply(so_list, function(x) {return(unique(x$sample))})
+  
+  #run DE on each sample to find specific markers for each cluster in the three samples
+  markers_list <- lapply(so_list, function(x) {
+    x$cluster<-Idents(x)
+    all_markers<- FindAllMarkers(x, do.print = FALSE,
+                                 group.by="clusters", 
+                                 assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.20, only.pos = FALSE) %>% 
+      dplyr::filter(p_val_adj < 0.05)
+    
+    head(all_markers)
+    return(all_markers)
+  })
+  
+  names(markers_list) = names(so_list)
+  
+  
+  # one heatmap will be generated for each sample, featuring the top markers for each cluster in the given sample
+  heatmap_list<-lapply(names(markers_list), function(x) { # x is the sample's name
+    
+    #plot heatmaps
+    top_markers<-markers_list[[x]] %>%
+      group_by(cluster) %>%
+      dplyr::filter(avg_log2FC > 1) %>%
+      slice_head(n = topn) %>%
+      ungroup() 
+    
+    heatmap<-DoHeatmap(so_list[[x]],
+                       features = top_markers$gene,
+                       assay = "SCT",
+                       slot="data") + ggtitle(paste0("merged markers for each cluster ",x," at ",type," level") )
+    
+    ggsave(filename=paste0(outdir,"/heatmap_",x,"_",type,".png"),heatmap)
+    print(heatmap)
+    return(heatmap)
+  })
+  names(heatmap_list)=names(markers_list)
+  res=list()
+  res$markers=markers_list
+  res$heatmaps=heatmap_list
+  
+  return(res)
+}
+
+res_de_iso_merged<-DE_clusters_merged(merged, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/impact_integ"),
+                      topn=10,
+                      type="gene")
+
+
+
+# confusion matrix
+df<-as.data.frame(merged$clusters)
+colnames(df)<-c("merged_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(integrated$rpca_clusters)
+colnames(df2)<-c("rpca_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+list<-list(df$merged_clusters,df$rpca_clusters)
+names(list)<-c("merged","integrated")
+
+confusion<-table(list)
+confusion
+
+```
+on va regarder 1merged avec 1integrated
+
+```{r}
+# venn
+cell_list<-list(df[df$merged_clusters==1,"cell_names"],
+                df[df$rpca_clusters==1,"cell_names"])
+
+names(cell_list)<-c("merged","integrated")
+
+vd<-ggVennDiagram(cell_list) +labs(title = paste0("Overlapping cells between the two clusters"))
+vd
+
+
+#integrated_iso<-PrepSCTFindMarkers(integrated_iso,assay="SCT")
+
+markers_merged <- FindMarkers(merged, ident.1 = 1, group.by = 'clusters')
+markers_integrated<- FindMarkers(integrated, ident.1 = 1, group.by = 'rpca_clusters')
+
+list<-lapply(list(markers_merged,markers_integrated),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+list_markers_integrated<-list[[2]]
+```
+
+
+enrichment
+```{r}
+
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample="merged1",
+                      output_path=paste0(rootdir,"/analyses/integration_impact"))
+
+enriched_integrated<-run_enrichR(list_markers_integrated,
+                      sample="integrated1",
+                      output_path=paste0(rootdir,"/analyses/integration_impact"))
+
+```
+
+
+semble plus être des cellules qui cyclent
+```{r}
+top_merged<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+top_integ<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+print(paste(length(intersect(top_merged,top_integ)),'/ 20 termes de reactome_pathway en commun'))
+  
+```
+
+
+# aussi avec les autres clusters:
+
+pas sur le cluster 0/0 car il n'y a pas assez de gènes DE pour faire enrichr
+```{r}
+list_int<-list("3"=4,"4"=5,"5"=6)
+
+for (cluster_m in names(list_int)) {
+  cluster_i<-list_int[cluster_m]
+
+markers_merged <- FindMarkers(merged, ident.1 = cluster_m, group.by = 'clusters')
+markers_integrated<- FindMarkers(integrated, ident.1 = cluster_i, group.by = 'rpca_clusters')
+
+list<-lapply(list(markers_merged,markers_integrated),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+list_markers_integrated<-list[[2]]
+
+dir.create(paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample=paste0("merged",cluster_m),
+                      output_path=paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+
+enriched_integrated<-run_enrichR(list_markers_integrated,
+                      sample=paste0("integrated",cluster_i),
+                      output_path=paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m,"_integrated",cluster_i))
+
+
+top_merged<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+top_integ<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+print(paste(length(intersect(top_merged,top_integ)),'/ 20 termes de reactome_pathway en commun'))
+}
+
+```
+
+
+on fait aussi pathway pour les autres clusters du merge pour lesquels l'association avec cluster intégré est plus ambigue: (ie le 2 et le 6 )
+
+
+```{r}
+
+
+for (cluster_m in c(2,6)) {
+
+
+markers_merged <- FindMarkers(merged, ident.1 = cluster_m, group.by = 'clusters')
+
+list<-lapply(list(markers_merged),function(x) { 
+  x<-x|> filter(p_val_adj <0.05 &avg_log2FC > 1)
+  return(rownames(x))})
+
+list<-lapply(list, function(x) {
+   x<-as.data.frame(x) |> mutate(
+      gene_name = sub(".*--", "",x))
+  return(x$gene_name)
+})
+
+list_markers_merged<-list[[1]]
+
+
+dir.create(paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m))
+enriched_merged<-run_enrichR(list_markers_merged,
+                      sample=paste0("merged",cluster_m),
+                      output_path=paste0(rootdir,"/analyses/integration_impact/merged_",cluster_m))
+
+
+
+
+top_merged<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+top_integ<-as.data.frame(enriched_merged[["Reactome_Pathways_2024"]] )|> slice_min(order_by=P.value,n=20)|> pull(Term)
+print(paste(length(intersect(top_merged,top_integ)),'/ 20 termes de reactome_pathway en commun'))
+}
+```
+
+
+pas assez de gènes significatifs dans m0/i0 pour tracer du pathway
+plus de process et pathway apoptotiques dans merge5/integ6
+d'autant plus intéressant que ce cluster grossit dans les cellules resistantes
+
+
+ccl°: on va arreter de travailler avec des données non intégrées
+même si dans l'exemple du cluster m5/I6 l'integ semble avoir concentré le signal / les process dans le même cluster
+
+
+
+
+
+# evaluation metrics and tools /perspectives
+. As an evaluation metric, we used two correlation coefficients, Pearson and Spearman, of the obtained test statistics between reference, test, and corrected studies
+
+Differential Gene Expression (DGE) Analysis: This was performed at both individual gene level and gene set level
+
+.Gene-level Analysis: Two approaches were used:
+ 
+        Parametric Method: MAST (Model-based Analysis of Single-cell Transcriptomics) was applied to log-transformed expression matrices
+    
+        Non-parametric Method: EMDomics (Earth Mover's Distance) was used, which does not assume a specific data distribution and measures overall differences between distributions
+    
+    Gene Set Level Analysis: Gene Set Enrichment Analysis (GSEA) was performed using the fGSEA R package
+ 
+
+Correlation Analysis (Primary Metric): To quantify the preservation of biological information and assess the quality of integration, two correlation coefficients were used
+
+    Pearson Correlation: Measures linear relationships.
+    Spearman Correlation: Measures monotonic relationships. These coefficients were calculated between the test statistics (from MAST, EMDomics, or GSEA) of the 'reference' (balanced) study and the 'corrected' (confounded) study
+  
+ . A higher correlation indicated better preservation of biological information.
+
+

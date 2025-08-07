@@ -1,0 +1,592 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-15"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+ordi="inserm-root"
+dir.create(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist"))
+rootdir=paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist")
+setwd(rootdir)  # Set this to correct location
+#source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R"))
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R"))
+
+```
+
+
+méthode de regression sur les gènes histo et ribo choisie: ? on retire les histo/ribo
+intégration: non
+cf ggdocs pour expliquer méthode en détail. 
+
+```{r}
+merged_iso<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_gene.rds"))
+```
+
+
+il faut d'abord relier les cellules au clustering fait dans le gene level:
+
+```{r}
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+```
+
+
+# approche supervisée: étude de la liste de gènes apoptotiques
+
+on télécharge la liste des gènes associés à la mort cellulaire:
+```{r}
+list<-readLines(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/references/liste_gènes_apoptose.txt"))
+print(list)
+```
+## filtres
+- gene qui exprime plus que 2 isoformes
+- isoforme qui a une expression supérieure à x dans plus de 500 cellules par exemple
+- on se concentre sur les gènes qui switchent d'isoformes entre les conditions 
+
+nb iso:
+```{r}
+
+df<- data.frame(feature= Features(merged_iso))  
+  #1 split transcript ids into gene and transcript id
+  pseudobulk_data <- df %>% 
+    mutate(
+      gene_name = sub(".*--", "",feature))|> 
+    mutate(transcript_id=sub("--.*", "",feature))
+  
+  
+  
+  # 2. Count the number of isoforms per gene
+  isoform_count_per_gene <- pseudobulk_data %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) %>%
+    filter(gene_name %in% list)
+  
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+  
+```
+
+expression iso dans un nombre suffisant de cellules
+```{r}
+
+
+# Seuil
+seuil_expr <- 1
+seuil_cell<-100
+
+expr_matrix <- LayerData(merged_iso, assay = "SCT",layer  = "data")  
+
+# Calcul du nombre de cellules où chaque feature est exprimée au-dessus du seuil
+feature_counts <- Matrix::rowSums(expr_matrix > seuil_expr)
+
+
+df_expr <- data.frame(
+  feature = names(feature_counts),
+  n_cells_expressed = feature_counts,
+  row.names = NULL
+)
+
+
+
+
+df_filt2<-df_expr %>% mutate(gene_name = sub(".*--", "",feature),
+                   transcript_id=sub("--.*", "",feature)) %>%
+  filter((gene_name %in% list_filt1) & (n_cells_expressed > seuil_cell )
+         ) 
+df_filt2
+
+
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+
+pass_prop <-isoform_count_per_gene %>% full_join(isoform_count_per_gene_pass, by ="gene_name") %>%
+  replace_na(replace=list(n_isoforms_pass=0)) %>%
+  mutate(pass=n_isoforms_pass/n_isoforms)
+
+print(pass_prop%>%filter(pass>0))
+
+```
+
+la proportion pour un gène de transcripts exprimés qui passent le seuil par rapport au nombre total de transcripts identifiés mais pas forcément bcp exprimés
+```{r}
+
+```
+
+
+
+
+```{r}
+dir.create(paste0(rootdir,"/supervised"))
+```
+
+dotplot pour visualiser les switchs entre les conditions
+
+```{r}
+
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+Idents(merged_iso)<-"sample"
+for (gene in unique(df_filt2$gene_name)) {
+  plot_features_list <- grep(paste0("--",gene,"$"), df_filt2$feature, value = TRUE)
+  dplot<-DotPlot(object = merged_iso, #cols = c("green", "blue","red"), 
+                features =plot_features_list, #split.by = "sample"
+                )+
+scale_x_discrete(guide = guide_axis(n.dodge=length(plot_features_list)))
+  print(dplot)
+  ggsave(plot = dplot,
+         filename =paste0(rootdir,"/supervised/dotplot_",gene,".png") )
+                
+}
+
+```
+
+
+on laisse de coté pour le moment:
+genes qui switchent d'iso entre les condition (ici on pourrait le regarder "à la main" ave les feature plots mais  ça peut servir à mettre au point le filtre que l'on utilisera dans l'approche non supervisée)
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(Matrix)
+library(dplyr)
+
+# Seuil d'expression
+x <- 1
+
+# Récupération de la matrice d'expression (log-normalized par défaut)
+expr_matrix <- GetAssayData(seurat_obj, slot = "data")  # ou "counts" si tu veux les raw counts
+
+# Récupérer les métadonnées avec les infos d'échantillon
+metadata <- seurat_obj@meta.data
+samples <- metadata$sample
+
+# Créer un tableau logique : TRUE si la feature est exprimée > x
+expr_binary <- expr_matrix > x
+
+# Initialiser une liste pour stocker les proportions par échantillon
+sample_levels <- unique(samples)
+proportion_by_sample <- list()
+
+# Boucle sur chaque échantillon
+for (s in sample_levels) {
+  # Sélection des colonnes correspondant aux cellules de l'échantillon
+  sample_cells <- which(samples == s)
+  
+  # Sous-matrice d'expression pour ces cellules
+  sub_expr <- expr_binary[, sample_cells, drop = FALSE]
+  
+  # Calcul de la proportion de cellules exprimant chaque gène
+  prop <- Matrix::rowMeans(sub_expr)
+  
+  proportion_by_sample[[s]] <- prop
+}
+
+# Transformer la liste en data.frame
+proportion_df <- as.data.frame(proportion_by_sample)
+
+# Ajouter le nombre total de cellules exprimant chaque gène (tous échantillons confondus)
+n_cells_expressed <- Matrix::rowSums(expr_binary)
+
+# Construire le dataframe final
+final_df <- data.frame(
+  feature = rownames(expr_matrix),
+  n_cells_expressed = as.numeric(n_cells_expressed)
+) %>%
+  bind_cols(proportion_df)
+
+# Aperçu
+head(final_df)
+
+```
+
+
+
+## features plots
+
+
+```{r}
+
+list_filt2<-unique(df_filt2$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+missing_genes <- c()
+for (gene in list_filt2) {
+  tryCatch({
+    plot_feature_iso(
+      merged_iso,
+      gene = gene,
+      sample_name = "",
+      output_dir =paste0(rootdir,"/supervised")
+    )
+  }, error = function(e) {
+    message(paste0("Le gène ", gene, " n'est pas dans l'objet Seurat."))
+    missing_genes <<- c(missing_genes, gene)
+   
+  })
+}
+```
+pour tracer seulement ceux présents dans la liste de transcript identifiés:
+
+
+```{r}
+
+list_filt2<-unique(df_filt2$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- df_filt2 %>% pull(feature)
+
+
+
+plot_feature_iso2<-function(seu_obj,
+                           gene,
+                           sample_name,
+                 
+                           output_dir="./analyses",
+                           marker_list) {
+  
+  seu_obj<-merged_iso
+  features <- Features(seu_obj)
+  
+  plot_features_list <- grep(paste0("--",gene,"$"), intersect(features,marker_list), value = TRUE)
+  
+  seu_obj$sample <- factor(seu_obj$sample , levels = c("ctrl", "S24", "R"))
+  plot1<-FeaturePlot(seu_obj, features = plot_features_list,combine=TRUE,split.by="sample",label=TRUE) +theme(strip.text = element_text(size = 1)) #+labs(title = paste0("Differential transcript expression per sample for ",gene))
+  
+  ggsave(filename = paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png")), 
+         plot = plot1, width=8,height=5*length(plot_features_list),limitsize = FALSE)
+  
+  
+  
+  print(paste0("plotted in ",paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png"))))
+  return(plot1)
+}
+missing_genes <- c()
+for (gene in list_filt2) {
+  #tryCatch({
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(rootdir,"/supervised"),
+      marker_list
+    )
+    
+  #}, error = function(e) {
+    #message(paste0("Le gène ", gene, " n'est pas dans l'objet Seurat."))
+   # missing_genes <<- c(missing_genes, gene)
+   
+ # })
+}
+```
+
+d'après les featuresplots, on a bien qqch d'assez homogène sur toute la population cellulaire
+
+
+et enfin on utilise isoviz pour visualiser l'expression des transcripts déjà décrits
+
+
+```{r}
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  merged_iso, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/supervised/Pseudobulk_exp_merged_iso_sample.csv"), row.names = FALSE)
+```
+
+
+```{r}
+knitr::include_graphics(list.files(path =paste0(rootdir,"/supervised"),
+                                   pattern = "\\.jpeg$", 
+                                   full.names = TRUE))
+```
+
+
+
+
+# approche non supervisée
+
+
+diagramme composition en échantillon de chaque cluster en version stack, car les derniers clusters sont plus petits, c’est peut être normal que les premiers semblent avoir une meilleure répartition.
+
+```{r}
+props<-lapply(c(merged_gene), function(x){ 
+  md<-x[[]]
+  # 2. Compter les cellules par cluster et par échantillon
+counts <- md %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+# 3. Calculer la proportion dans chaque cluster
+props <- counts %>%
+  group_by(seurat_clusters) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+  return(props)
+  })
+
+props[[1]]$dataset<-"merged gene"
+#props[[2]]$dataset<-"integrated gene"
+
+combined_props <- bind_rows(props)
+
+# Tracer les histogrammes comparés
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position =  "stack") +  # Barres empilées
+  facet_wrap(~dataset) +  # Un graphique par dataset
+  ylab("nombre cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  #scale_y_continuous(labels = scales::percent_format()) +
+  ggtitle("Proportions d'échantillons par cluster merged")
+```
+
+
+
+```{r}
+combined_props <- combined_props %>%
+  group_by(dataset, seurat_clusters) %>%
+  mutate(prop_within_cluster = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    label = ifelse(prop_within_cluster >= 0.05, paste0(round(prop_within_cluster * 100), "%"), NA)  # seuil de lisibilité
+  )
+combined_props$sample <- factor(combined_props$sample , levels = c("ctrl", "S24", "R"))
+
+
+# Plot avec barres empilées (nombre de cellules) + labels de proportions
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white", size = 3, fontface = "bold", na.rm = TRUE
+  ) +
+  facet_wrap(~dataset) +
+  ylab("Nombre de cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  ggtitle("Proportions d'échantillons par cluster (en % sur chaque cluster)")
+```
+
+## selection d'un cluster d'intérêt
+
+- enrichr sur gènes DE par cluster
+prep isoviz
+
+```{r}
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  merged_iso, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "gene_clusters"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+dir.create(paste0(rootdir,"/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/isoviz/Pseudobulk_exp_merged_iso.csv"), row.names = FALSE)
+```
+
+
+```{r}
+knitr::include_graphics(list.files(path = file.path(rootdir, "isoviz"),
+                                   pattern = "\\.png$", 
+                                   full.names = TRUE))
+```
+
+
+```{r}
+knitr::include_graphics("/home/labct/Téléchargements/IsoVis_ENSG00000143384.png")
+```
+
+avec ces résultats + l'analyse d'enrichissement faite précédement, on sélectionne 3 clusters d'intérêt:
+- cluster 0 (d'après l'analyse isoviz vue précédemment, bcp de gènes apoptotiques ont des transcripts qui ressortent dans ce cluster )
+- cluster 4 (de nombreuses signatures apoptotiques / en lien avec la mitochondrie)
+- cluster 3 (présente 2 termes associés à la régulation de la ferroptose)
+
+l'objectif maintenant va être de disséquer ces clusters sample par sample pour identifier de nouveaux transcripts dont le gènes n'est pas forcément relié à l'apoptose mais le fait que ça soit dans un cluster apoptotique pourrait laisser penser que le trnascript a un rôle apoptotique ou inversement.
+
+on veut donc:
+- diagramme de venn sample /sample pour chaque cluster
+- approche supervisée: on a une liste de gènes connus qu'on veut investiguer, on va faire des features plots en split selon les conditions de ces gènes là avec un umap du set total. l'umap aura un labelling selon le cluster pour voir aussi où est exprimé le transcript/gene que l'on regarde.
+- approche non supervisée où on va regarder les listes de gènes et transcripts DE et les enrichissements
+
+
+...
+
+(à partir des features plots: filtres sur les gènes qui sont exprimés dans bcp de cellules et qui ont un certain seuil d'expression / cellule? 
+exemple percentage feature set/ cellule pour chaque gene et on garde un gène si dans x cellules il a plus de tant de % d'expression du gène, le seuil peut être fixé avec vln plot
+filtre sur le nombre d'isoformes exprimés?
+on regarde ce qui se passe avec les isoformes de ces gènes avec isoviz ou feature plot, et quelles associations existent pour ce gène? 
+on peut faire la même chose au sein d'un cluster pour voir si des choses ressortent? 
+par exemple intéressant de montrer que se concentrer sur un cluster permet de faire ressortir un gène que l'on aurait pas vu sinon? 
+que fait on une fois que l'on a un gène suffisment exprimé (dans un cluster par exemple) avec des isoformes différentiellement exprimés entre les conditions?) 
+
+
+non supervisée: objectif = découvrir une nouvelle cible
+par exemple : L'objectif est d'identifier des gènes qui ne parraissent pas avoir un rôle dans la résistance/ l'apoptose mais dont les cellules resistantes expriment des isoformes qui ont un rôle différent du rôle de l'isoforme classique. 
+donc
+on se place au sein d'un cluster d'intérêt qui a une certaine coloration ex apoptose
+filtre sur les gènes exprimés (cf au dessus de tel seuil dans x % des cellules) et sur par exemple au moins 2 transcripts
+avec des transcripts exprimés dans R et pas dans ctrl par exemple? ou dont l'expression croit ou décroit de manière significative avec l'apparition de la résistance? 
+=> on veut une liste de nouvelles cibles à tester?
+
+On a rajouté les annotations sur les clusters identifiés précédemment, mtn on subset les objets. 
+
+```{r}
+
+subset_list<- lapply(c(0,3,4), function(x) {
+  sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0("unintegrated cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=paste0(rootdir,"/focus_cluster"),sample=x)
+  return(sub)
+})
+names(subset_list)<-c(0,3,4)
+```
+
+
+
+Etape suivante: DE_sample sur ces subsets pour comparer les transcripts exprimés dans les 3 conditions. 
+
+
+```{r}
+lapply(subset_list, function(x){ 
+  res1<-DE_samples(x, output_dir = paste0(rootdir, "/focus_cluster"), sample_name = unique(x$sample),PrepSCT = T)
+  #print(res1$heatmap)
+  })
+
+```
+
+```{r}
+lapply(subset_list, function(x){
+
+
+#seu_obj<-subset_list[["0"]]
+seu_obj<-x
+output_dir=paste0(rootdir, "/focus_cluster")
+sample_name=unique(x$gene_clusters)
+#sample_name="0"
+topn=15
+type="isoform"
+PrepSCT=T
+  
+  DefaultAssay(object = seu_obj) <- "SCT"
+  
+  if (PrepSCT==TRUE) {  seu_obj<-PrepSCTFindMarkers(seu_obj, assay = "SCT", verbose = TRUE)
+}
+  
+  res=list()
+  
+  Idents(seu_obj)<-"sample"
+  
+  all_markers <- FindAllMarkers(seu_obj, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                # logfc.threshold = 0.5, min.pct = 0.20,
+                                only.pos = FALSE) %>% dplyr::filter(p_val_adj < 0.05)
+  res$markers<-all_markers
+  write.csv(all_markers, file=paste0(output_dir,"/all_markers_",sample_name,type,".csv"))
+  
+  head(all_markers)
+  
+  
+  
+  #then heatmap 
+  all_markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = topn) %>%
+    ungroup() -> top_markers
+  
+  heatmap<-DoHeatmap(seu_obj, slot="data", 
+                     assay="SCT",
+                     features = top_markers$gene,group.by = "sample") + labs(caption = paste0("Top markers for each sample at ",type," level"))
+  
+ ggsave(filename=paste0(output_dir,"/heatmap_top_markers_",sample_name,type,".png"),
+         heatmap)
+  #print(heatmap) 
+  res$heatmap<-heatmap
+  return(res)})
+```
+
+
+Isoviz can help exploring the isoforms and their functionnal impact:
+```{r}
+
+lapply(names(subset_list), function(x){ 
+
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  subset_list[[x]], 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+#dir.create(paste0(rootdir,"/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/isoviz/Pseudobulk_exp_merged_iso_",x,".csv"), row.names = FALSE)})
+```
+

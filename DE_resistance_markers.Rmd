@@ -1,0 +1,238 @@
+---
+title: "DE_analysis_regressed_out"
+output: html_document
+date: "2025-06-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{r}
+rootdir="/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+setwd(rootdir)  # Set this to correct location
+source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R")
+source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R")
+
+```
+
+# DE - sample level -after regress out
+```{r load}
+merged_iso<-readRDS(file = paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene.rds"))
+
+```
+
+```{r}
+plot<-plot_feature_iso(merged_iso,
+                 gene="BAX",
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses"))
+plot
+```
+
+```{r}
+plot<-plot_feature_iso(merged_iso,
+                 gene="BCL2",
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses"))
+plot
+```
+
+```{r}
+plot<-plot_feature_iso(merged_iso,
+                 gene="MCL1",
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses"))
+plot
+```
+
+```{r}
+plot<-plot_feature_iso(merged_iso,
+                 gene="TP53",
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses"))
+plot
+
+```
+
+
+```{r}
+plot<-plot_feature_iso(merged_iso,
+                 gene="TOMM6",
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses"))
+plot
+
+```
+
+```{r}
+dir.create(paste0(rootdir,"/analyses/res_markers"))
+```
+
+
+```{r iso_de_unint}
+DE_samples_iso<-DE_samples(merged_iso,
+                     output_dir=paste0(rootdir,"/analyses/res_markers"),
+                     "reg_merged", #to specify what we are working with in the output file name 
+                     topn=10,
+                     type="isoform")
+
+markers_sample_iso<-DE_samples_iso$markers
+head(markers_sample_iso)
+```
+
+
+```{r gene_de_unint}
+
+DE_samples_gene<-DE_samples(merged_gene,
+                     output_dir=paste0(rootdir,"/analyses/res_markers"),
+                     "reg_merged", #to specify what we are working with in the output file name 
+                     topn=10,
+                     type="gene")
+
+markers_sample_gene<-DE_samples_gene$markers
+head(markers_sample_gene)
+```
+
+let's look a the isoforms of the DE'ed genes:
+```{r}
+list<- markers_sample_gene |> group_by(cluster) |> slice_head(n = 10)|>pull(gene)
+for (gene in list) {
+plot_feature_iso(merged_iso,
+                 gene=gene,
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses/res_markers"))}      
+```
+
+
+
+on regarde les gènes qui sont DE dans R et S24 par rapport au reste
+```{r}
+dir.create(paste0(rootdir,"/analyses/res_markers/genes_R_S24"))
+```
+
+```{r}
+listR<- markers_sample_gene |>filter(cluster == "R") |>pull(gene)
+listS24<- markers_sample_gene |>filter(cluster == "S24") |>pull(gene)
+list<-intersect(listR, listS24) #genes caractéristiques de R qui commencent à apparaitre dans S24 et pas dans ctrl? 
+
+
+
+for (gene in list[1:10]) {
+plot_feature_iso(merged_iso,
+                 gene=gene,
+                 sample_name="reg_merged",
+                 output_dir=paste0(rootdir,"/analyses/res_markers/genes_R_S24"))} 
+
+#on affine à ceux qui ont des transcripts DE entre les 2
+
+markers_sample_iso<-markers_sample_iso |> filter(avg_log2FC > 2) |> mutate(
+      gene_name = sub(".*--", "",gene))|> 
+    mutate(transcript_id=sub("--.*", "",gene))
+list1<- markers_sample_iso |> filter(gene_name %in% list) |> pull(gene_name)
+list1<- unique(list1)
+print(head(list1))
+
+# on garde les gènes qui sont sous-exprimés dans CTRL
+
+ctrl_genes<- markers_sample_gene |>filter(cluster == "ctrl" & avg_log2FC < -2)|>pull(gene)
+list2<-intersect(list1,ctrl_genes)
+print(head(list2))
+writeLines(list2, paste0(rootdir,"/analyses/res_markers/genes_R_S24/gene_list.txt"))
+
+dir.create(paste0(rootdir,"/analyses/res_markers/genes_R_S24/sous_expr_ctrl"))
+#for (gene in list2) {
+#plot_feature_iso(merged_iso,
+                 #gene=gene,
+               #  sample_name="3samples_reg",
+              #   output_dir=paste0(rootdir,"/analyses/res_markers/genes_R_S24/sous_expr_ctrl"))} 
+```
+
+autre approche: on fait DE entre ctrl et R pour les genes, on  prend les gènes surexprimés dans R vs ctrl et dans s24 vs ctrl et on regarde leurs isoformes
+
+
+```{r}
+
+R_markers<-FindMarkers(merged_gene,ident.1 = "R",ident.2 = 'ctrl', group.by = "sample")
+R_markers
+R_markers %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 50) %>%
+    ungroup() -> top_markers
+
+DoHeatmap(merged_gene,group.by = "sample" ,features = rownames(top_markers)) + labs(title = "Top markers for R vs ctrl at gene level")
+
+S24_markers<-FindMarkers(merged_gene,ident.1 = "S24",ident.2 = 'ctrl', group.by = "sample")
+S24_markers
+S24_markers %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 50) %>%
+    ungroup() -> top_markers
+
+DoHeatmap(merged_gene,group.by = "sample" ,features = rownames(top_markers)) + labs(title = "Top markers for S24 vs ctrl at gene level")
+
+detect_list_on<-intersect(rownames(R_markers%>%
+    dplyr::filter(avg_log2FC > 1 & p_val_adj<0.05)),
+                       rownames(S24_markers%>%
+    dplyr::filter(avg_log2FC > 1 & p_val_adj<0.05)))
+print(detect_list_on)
+DoHeatmap(merged_gene,group.by = "sample" ,features = detect_list_on) + labs(title = "Top markers in R and S24 at gene level")
+
+vplot<-VlnPlot(merged_gene, features = detect_list_on[1:5],group.by = "sample")
+vplot
+output_dir=paste0(rootdir,"/cell_cycle_regression/test_DE/genes_R_S24/2emethode")
+#dir.create(output_dir)
+
+#ggsave(filename = paste0(output_dir,"/vlnplot1",paste0("3samples_reg.png")), 
+     #    plot = VlnPlot(merged_gene, features = detect_list_on[1:15],group.by = "sample"),
+   #    width=8,height=5*15,limitsize = FALSE)
+
+
+for (i in seq(1, length(detect_list_on), by = 6)) {
+  print(VlnPlot(merged_gene, features = detect_list_on[i:min(i+5, length(detect_list_on))], group.by = "sample"))
+}
+
+```
+on peut faire l'inverse aussi, des genes qui sont "éteints " dans R par rapport à ctrl et qui commencent à diminuer dans S24
+
+
+```{r}
+detect_list_off<-intersect(rownames(R_markers%>%
+    dplyr::filter(avg_log2FC < -1 & p_val_adj<0.05)),
+                       rownames(S24_markers%>%
+    dplyr::filter(avg_log2FC < -1 & p_val_adj<0.05)))
+print(detect_list_off)
+DoHeatmap(merged_gene,group.by = "sample" ,features = detect_list_off) + labs(title = "Top markers turned off R and S24 at gene level")
+
+
+
+
+
+for (i in seq(1, length(detect_list_on), by = 6)) {
+  print(VlnPlot(merged_gene, features = detect_list_off[i:min(i+5, length(detect_list_off))], group.by = "sample"))
+}
+
+```
+
+
+
+
+# pathway analysis
+
+What are the biological roles of these "on" and "off" genes?
+
+```{r}
+run_enrichR(input = detect_list_on, sample = "on_genes")
+
+```
+
+```{r}
+run_enrichR(input = detect_list_off, sample = "off_genes")
+```
+

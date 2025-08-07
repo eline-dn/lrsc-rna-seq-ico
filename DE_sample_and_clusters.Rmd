@@ -1,0 +1,225 @@
+---
+title: "DE_sample_and_clusters"
+output: html_document
+date: "2025-06-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+setwd(rootdir)  # Set this to correct location
+#source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R")
+source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R")
+```
+
+
+# Load the objects 
+```{r}
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_gene.rds"))
+merged_iso<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds"))
+```
+
+# General venn diagram:
+ How many genes and transcripts overlap in our different clusters?
+ 
+
+```{r}
+plot_venn(merged_gene,"gene")
+plot_venn(merged_iso,"isoform")
+```
+
+
+# DE - sample level
+
+
+
+We'll run the DE testing on the unintegrated assay. 
+
+```{r iso_de_sample}
+DE_samples_iso<-DE_samples(merged_iso,
+                     output_dir=paste0(rootdir,"/analyses"),
+                     "", #to specify what we are working with in the output file name 
+                     topn=15)
+
+markers_sample_iso<-DE_samples_iso$markers
+head(markers_sample_iso)
+```
+
+Let's have a look at the genes that have differentially expressed transcripts between the samples:
+```{r pathway_iso_de_sample}
+
+lapply(c("ctrl","S24","R"), function(x) {
+  gene_list<-markers_sample_iso |> 
+  filter(avg_log2FC>2 & cluster==x) |> 
+  mutate(
+      gene_name = sub(".*--", "",gene)) |>pull(gene_name)
+
+run_enrichR(gene_list,x)
+})
+
+  
+
+```
+The genes involved in these pathway,etc... express different isoforms .
+
+Same analysis on the gene-level:
+```{r gene_de_sample}
+DE_samples_gene<-DE_samples(merged_gene,
+                     output_dir=paste0(rootdir,"/analyses"),
+                     "3samples_gene", #to specify what we are working with in the output file name 
+                     topn=10,
+                     type="gene")
+
+markers_sample_gene<-DE_samples_gene$markers
+head(markers_sample_gene)
+```
+
+Let's have a look at the genes that are differentially expressed between the samples:
+```{r pathway_gene_de_sample}
+
+lapply(c("ctrl","S24","R"), function(x) {
+  gene_list<-markers_sample_gene |> 
+  filter(avg_log2FC>2 & cluster==x) |>pull(gene)
+
+run_enrichR(gene_list,x)
+})
+
+  
+
+```
+
+# DE - cluster level
+
+We will now use the cluster labels obtained after rpca integration and run DE analysis across these cluster to identify some cellular clones for example. We will also run pathway enrchment analysis on these DE'ed genes and transcripts. 
+```{r}
+dir.create(paste0(rootdir,"/analyses/DE_clusters"))
+```
+```{r}
+merged_gene<-readRDS("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/merge_integration/cell_cycle_regression/regressed_obj_gene_integrated.rds")
+merged_iso<-readRDS("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/merge_integration/cell_cycle_regression/regressed_obj_isoform_integrated.rds")
+```
+
+
+
+```{r iso_de_cluster}
+res_de_iso<-DE_clusters(merged_iso, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=10,
+                      type="isoform")
+
+
+```
+
+
+```{r gene_de_cluster}
+res_de_gene<-DE_clusters(merged_gene, # an integrated seurat object
+                      outdir=paste0(rootdir,"/analyses/DE_clusters"),
+                      topn=10,
+                      type="gene")
+
+```
+## Focus on individual clusters
+At transcript-level, clusters 1 and 4 seem to stand out more. 
+At gene-level we might want to focus on clusters 1 that stays present across samples and  cluster 2 that seem to appear in the resistant cells. The following function extracts a list of DE'ed markers in a specified cluster,returns the list and plots Vln Plots for these markers
+```{r}
+list_gene1<-extract_cluster_feature(num_cluster=1,
+                                  marker_table_list=res_de_gene$markers, # the $markers output from DE_cluster()
+                                  type="gene",
+                                  cluster_names="rpca_clusters", # or "clusters" if the object is not integrated
+                                  integrated=TRUE,
+                                  seu_obj=merged_gene # used in DE_cluster()
+                                  )
+
+
+list_gene2<-extract_cluster_feature(num_cluster=2,
+                                  marker_table_list=res_de_gene$markers, # the $markers output from DE_cluster()
+                                  type="gene",
+                                  cluster_names="rpca_clusters", # or "clusters" if the object is not integrated
+                                  integrated=TRUE,
+                                  seu_obj=merged_gene # used in DE_cluster()
+                                  )
+```
+
+
+Some of these genes are indeed specific to a cluster but not all of them.
+
+Do they have DE'ed transcripts in the 3 samples? For examples with the 10 first genes of cluster 1 
+
+```{r}
+num_cluster=1
+type="gene"
+ setwd(paste0(rootdir,"/analyses/cluster",num_cluster,"_",type))
+lapply(list_gene1[1:10], function(x) {
+  plot_feature_iso(merged_iso,
+                   x,
+                   sample_name = "",
+                   output_dir = "./")
+})
+
+```
+Not really...
+
+Can identify the biological function of cluster 1 with a pathway enrichment analysis?
+
+```{r}
+#gene_list<-sub(".*--", "",)
+
+run_enrichR(list_gene1[1:10],"cluster1 gene-level")
+```
+
+
+Let's now focus on DE'ed transcripts in clusters 1 and 4.
+```{r}
+list1<-extract_cluster_feature(num_cluster=1,
+                                  marker_table_list=res_de_iso$markers, # the $markers output from DE_cluster()
+                                  type="isoform",
+                                  cluster_names="rpca_clusters", # or "clusters" if the object is not integrated
+                                  integrated=TRUE,
+                                  seu_obj=merged_iso # used in DE_cluster()
+                                  )
+
+list1
+list4<-extract_cluster_feature(num_cluster=4,
+                                  marker_table_list=res_de_iso$markers, # the $markers output from DE_cluster()
+                                  type="isoform",
+                                  cluster_names="rpca_clusters", # or "clusters" if the object is not integrated
+                                  integrated=TRUE,
+                                  seu_obj=merged_iso # used in DE_cluster()
+                                  )
+
+
+```
+Are these transcripts DE'ed in the samples? 
+
+
+```{r}
+setwd(paste0(rootdir,"/analyses/cluster",1,"_isoform"))
+lapply(list1,function(x) {
+  plot1<-FeaturePlot(merged_iso, features = x,combine=TRUE,split.by="sample") +theme(strip.text = element_text(size = 1)) #+labs(title = paste0("Differential transcript expression per sample for ",gene))
+  
+  ggsave(filename = paste0("featureplot",x,".png") ,
+         plot = plot1, width=8,height=5,limitsize = FALSE)
+  
+  print(paste0("plotted in ",paste0("featureplot",x,".png") ))
+  return(plot1) 
+})
+  
+
+```
+Some of the transcripts seem to be specific to a sample. 
+
+Again, let's try to identify the biological function of cluster 1 using pathway analysis:
+
+```{r}
+gene_list1<-sub(".*--", "",list1)
+
+run_enrichR(gene_list1,"cluster1 transcript-level")
+```
+
