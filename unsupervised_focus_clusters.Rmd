@@ -1,0 +1,856 @@
+---
+title: "Unsupervised_cluster"
+output: html_document
+date: "2025-07-15"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+ordi="inserm-root"
+dir.create(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist"))
+rootdir=paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/unsupervised")
+setwd(rootdir)  # Set this to correct location
+#source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R"))
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R"))
+library(ComplexHeatmap)
+library(circlize)
+library(enrichR)
+```
+
+
+
+```{r}
+merged_iso<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_gene.rds"))
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+merged_gene$sample <- factor(merged_gene$sample , levels = c("ctrl", "S24", "R"))
+```
+
+méthode de regression sur les gènes histo et ribo choisie: ? on retire les histo/ribo
+intégration: non
+cf ggdocs pour expliquer méthode en détail. 
+
+
+il faut d'abord relier les cellules au clustering fait dans le gene level:
+
+```{r}
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+```
+
+tracer dimplot pour visualiser les clsuters_gene sur umap gene et iso
+```{r}
+DimPlot(merged_gene, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition at gene level")
+
+
+DimPlot(merged_iso, group.by=c("gene_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition at isoform level")
+
+```
+**bilan de la sélection de clsuter par heatmap d'annotation:**
+- c'est en effet plus intéressant de séparer les clusters par conditions car l'identité pour un cluster pris dans le set global semble un peu "noyée", et les termes apoptotiques ressortent moins bien. En tout cas l'identité obtenue avec le set global pourra être différente de celle obtenue condition par condition.
+
+- en regardant les gènes sur-exprimés: j'identifie les clusters 0,3 et 5 qui ont une signature apoptotique (ou ferroptotique) qui semble marquée et qui évolue au fil des conditions. Les clusters 1,4 et 6 semblent plus liés à la mitochondrie, et de manière plus marquée en se concentrant sur la signature dans le set global. Les clusters 0,3 et 5 changent bien d'identité entre les différentes conditions, et le 6 légèrement entre la phase aiguë et la résistance. 
+
+
+- en regardant les gènes sous-exprimés: Les clusters 0, 1 et 4  semblent changer de signature pendant la phase de résistance. 
+
+
+**Je vais donc me concentrer sur les clusters 0 3 5 et éventuellement 1 et 4 pour la suite. **
+
+une fois qu’on a sélectionné un cluster qui nous intéresse:
+De sur les gènes entre les conditions dans ce cluster
+on garde les gènes qui ont la valeur absolue de log2FC la plus élevée
+on met un seuil/ filtre comme en supervisé pour avoir des gènes avec plusieurs transcripts bien exprimés
+et feature plots pour bien visualiser ceux qui changent de transcripts exprimés entre les conditions 
+analyse bibliographique comme en supervisée
+comparer les gènes et iso obtenus par l’approche feature plot et par l’approche DE iso par clusters: faire un DE sur les gènes + des features plots permet de retrouver les mêmes transcrits que de faire DE transcripts ? 
+
+dir.create(paste0(rootdir,cluster))
+
+
+```{r eval=FALSE}
+sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0("unintegrated cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=paste0(rootdir,"/focus_cluster"),sample=x)
+  res1<-DE_samples(x, output_dir = paste0(rootdir, "/focus_cluster"), sample_name = unique(x$sample),PrepSCT = T)
+  
+  all_markers <- FindAllMarkers(seu_obj, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                #logfc.threshold = 0.5, min.pct = 0.20,
+                                only.pos = FALSE) %>% dplyr::filter(p_val_adj < 0.05 )
+```
+
+création de la fonction filtre + dplot
+
+```{r}
+
+filter_relevant_iso<-function(seu_obj, #!! mettre l'objet isoformes!!
+                              expr_threshold = 1,
+                              cell_threshold = 100,
+                              more_than_one_iso=FALSE,
+                              list # a list genes of interest
+                              ){
+  
+
+  df<- data.frame(feature= Features(seu_obj))  
+  # split transcript ids into gene and transcript id
+  pseudobulk_data <- df %>% 
+    mutate(
+      gene_name = sub(".*--", "",feature))|> 
+    mutate(transcript_id=sub("--.*", "",feature))
+  #  Count the number of isoforms per gene
+  isoform_count_per_gene <- pseudobulk_data %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) %>%
+    filter(gene_name %in% list)
+  # filter those with two or more isoforms
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+    # filter isoforms that are expressed above a specified threshold in a specified number of cells
+expr_matrix <- LayerData(seu_obj, assay = "SCT",layer  = "data")  
+feature_counts <- Matrix::rowSums(expr_matrix > expr_threshold) # calculate the number of cells where each feature is above the cell threshold
+df_expr <- data.frame( # and store the result in a dataframe
+  feature = names(feature_counts),
+  n_cells_expressed = feature_counts,
+  row.names = NULL
+)
+# filter out the transcripts that express two isoforms and more and that are expressed in enough cells
+df_filt2<-df_expr %>% mutate(gene_name = sub(".*--", "",feature),
+                   transcript_id=sub("--.*", "",feature)) %>%
+  filter((gene_name %in% list_filt1) & (n_cells_expressed > cell_threshold )
+         ) 
+print(df_filt2)
+  # compute the proportion of isoforms that pass the filters for each gene (may be used later but nor yet)
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+pass_prop <-isoform_count_per_gene %>% full_join(isoform_count_per_gene_pass, by ="gene_name") %>%
+  replace_na(replace=list(n_isoforms_pass=0)) %>%
+  mutate(pass=n_isoforms_pass/n_isoforms)
+#print(pass_prop%>%filter(pass>0))
+
+if (more_than_one_iso) { # filter the gene list in order to keep only the genes that have two features or more that pass the filters 
+    # compute the proportion of isoforms that pass the filters for each gene (may be used later but nor yet)
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+gene_pass<-isoform_count_per_gene_pass %>%
+  filter(n_isoforms_pass >1) %>%
+  pull(gene_name)
+df_filt2<-df_filt2 %>%
+  filter(gene_name %in% gene_pass)
+}
+return(df_filt2)
+
+}
+
+dot_plot_switch<-function(seu_obj,
+                          more_than_one_iso=FALSE,
+                          filtered_genes_df,
+                          output_dir) {# has to contain a gene_name column and a feature column with the transcripts
+#dotplot pour visualiser les switchs entre les conditions
+seu_obj$sample <- factor(seu_obj$sample , levels = c("ctrl", "S24", "R"))
+Idents(seu_obj)<-"sample"
+if (more_than_one_iso) { # filter the gene list in order to keep only the genes that have two features or more that pass the filters 
+    # compute the proportion of isoforms that pass the filters for each gene (may be used later but nor yet)
+isoform_count_per_gene_pass <- filtered_genes_df %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+gene_pass<-isoform_count_per_gene_pass %>%
+  filter(n_isoforms_pass >1) %>%
+  pull(gene_name)
+}
+for (gene in unique(gene_pass)) {
+  plot_features_list <- grep(paste0("--",gene,"$"), filtered_genes_df$feature, value = TRUE)
+  dplot<-DotPlot(object = seu_obj, #cols = c("green", "blue","red"), 
+                features =plot_features_list, #split.by = "sample"
+                )+
+scale_x_discrete(guide = guide_axis(n.dodge=length(plot_features_list)))
+  print(dplot)
+  ggsave(plot = dplot,
+         filename =paste0(output_dir,"/dotplot_",gene,".png") )
+                
+}}
+```
+
+```{r}
+
+x=3
+outdir<-paste0(rootdir,"/",x)
+dir.create(outdir)
+
+#isoform level:
+sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=outdir,sample=x)
+#gene level
+sub<-subset(merged_gene, subset= clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at gene level")))
+  plot_venn(sub,output=outdir,sample=x,type = "gene")
+  
+  res1<-DE_samples(sub, output_dir =outdir, sample_name = unique(sub$sample),PrepSCT = T,type = "gene",topn = 50)
+  res1$heatmap # markers par conditions, peut cacher les de par conditions qui sont propres au clsuter 0
+   pos_gene<-res1$markers %>%
+    filter(avg_log2FC>0)%>%
+    group_by(cluster)%>%
+    arrange(desc(avg_log2FC))%>%
+    slice_head(n=500)
+  # on calcule genes propres à cluster 3:
+  Idents(merged_gene)<-"clusters"
+  c0<-FindMarkers(merged_gene,ident.1 = 3) %>%
+    filter(p_val_adj<0.05 & avg_log2FC > 1 & pct.1 >0.1)
+  c0$gene<-rownames(c0)
+  
+  # intersection of posistives markers:
+  gene_list<-intersect(c0$gene,pos_gene$gene)
+  
+ 
+filtered_df<-filter_relevant_iso(merged_iso,list=gene_list,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = outdir,more_than_one_iso = T)
+```
+
+
+ça fait bcp trop: on va isoler les transcrits(!!) qui sont présents dans seulement une ou deux conditions
+
+```{r}
+pos_gene%>% filter(gene %in% (filtered_df$gene_name)
+```
+
+non
+
+
+gene_counts_pos <- table(unlist(lapply(list_pos, unique)))
+shared_genes_pos <- names(gene_counts_pos[gene_counts_pos >= 2])
+
+# autre approche: avec les features plots
+
+
+pour tracer seulement ceux présents dans la liste de transcript identifiés:
+
+
+```{r}
+
+list_filt2<-unique(filtered_df$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+
+
+plot_feature_iso2<-function(seu_obj,
+                           gene,
+                           sample_name,
+                 
+                           output_dir="./analyses",
+                           marker_list) { # marker list est la liste de transcrits filtrés qu'on veut plot
+  
+  seu_obj<-merged_iso
+  features <- Features(seu_obj)
+  
+  plot_features_list <- grep(paste0("--",gene,"$"), intersect(features,marker_list), value = TRUE)
+  
+  seu_obj$sample <- factor(seu_obj$sample , levels = c("ctrl", "S24", "R"))
+  plot1<-FeaturePlot(seu_obj, features = plot_features_list,combine=TRUE,split.by="sample",label=TRUE) +theme(strip.text = element_text(size = 1)) #+labs(title = paste0("Differential transcript expression per sample for ",gene))
+  
+  ggsave(filename = paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png")), 
+         plot = plot1, width=8,height=5*length(plot_features_list),limitsize = FALSE)
+  
+  
+  
+  print(paste0("plotted in ",paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png"))))
+  return(plot1)
+}
+missing_genes <- c()
+for (gene in list_filt2) {
+  #tryCatch({
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir,"/test"),
+      marker_list
+    )
+    
+  #}, error = function(e) {
+    #message(paste0("Le gène ", gene, " n'est pas dans l'objet Seurat."))
+   # missing_genes <<- c(missing_genes, gene)
+   
+ # })
+}
+```
+
+pour élargir la liste de gènes, on ne se restreint pas aux gènes surexprimés dans le clsuter 3:
+
+
+```{r}
+filtered_df<-filter_relevant_iso(merged_iso,list=pos_gene$gene,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = outdir,more_than_one_iso = T)
+
+
+
+list_filt2<-unique(filtered_df$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+
+
+plot_feature_iso2<-function(seu_obj,
+                           gene,
+                           sample_name,
+                 
+                           output_dir="./analyses",
+                           marker_list) { # marker list est la liste de transcrits filtrés qu'on veut plot
+  
+  seu_obj<-merged_iso
+  features <- Features(seu_obj)
+  
+  plot_features_list <- grep(paste0("--",gene,"$"), intersect(features,marker_list), value = TRUE)
+  
+  seu_obj$sample <- factor(seu_obj$sample , levels = c("ctrl", "S24", "R"))
+  plot1<-FeaturePlot(seu_obj, features = plot_features_list,combine=TRUE,split.by="sample",label=TRUE) +theme(strip.text = element_text(size = 1)) #+labs(title = paste0("Differential transcript expression per sample for ",gene))
+  
+  ggsave(filename = paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png")), 
+         plot = plot1, width=8,height=5*length(plot_features_list),limitsize = FALSE)
+  
+  
+  
+  print(paste0("plotted in ",paste0(output_dir,"/featureplot",paste0(sample_name,"_",gene,".png"))))
+  return(plot1)
+}
+for (gene in list_filt2) {
+
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir),
+      marker_list
+    )
+}
+```
+création de la fonction qui :
+- option pour ne garder que les gènes DE dans le cluster d'intérêt
+-renvoie liste de gènes d'intérêts et leurs transcrits qui passent les filtres, enregristre les dotplots et les feature plots
+
+```{r}
+features_of_interest<-function(merged_gene,
+                               merged_iso,
+                               cluster,
+                               select_DE=TRUE,
+                               log2FC_threshold=0.5) 
+  {
+  
+  x=cluster
+outdir<-paste0(rootdir,"/",x)
+dir.create(outdir)
+
+#isoform level: dimplot and venn diagramm
+sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=outdir,sample=x)
+#gene level: dimplot and venn diagramm
+sub<-subset(merged_gene, subset= clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at gene level")))
+  plot_venn(sub,output=outdir,sample=x,type = "gene")
+  
+  #DEA between the sample within the cluster:
+ sub<- PrepSCTFindMarkers(sub, assay = "SCT")
+  res1<-DE_samples(sub, output_dir =outdir, sample_name = unique(sub$sample),PrepSCT = T,type = "gene",topn = 50)
+  res1$heatmap # these gene markers per conditions can only reflect the DEed genes in the global set and not only in the cluster
+   pos_gene<-res1$markers %>%
+    filter(avg_log2FC>0)%>%
+    group_by(cluster)%>%
+    arrange(desc(avg_log2FC))%>%
+    slice_head(n=500)
+  # that's why we calculate the genes that are specific to this cluster, and intersect the two list. if the option select_DE is set to FALSE, the raw list of DEed genes across the sample will also be returned. 
+  Idents(merged_gene)<-"clusters"
+  c0<-FindMarkers(merged_gene,ident.1 = x) %>%
+    filter(p_val_adj<0.05 & avg_log2FC > log2FC_threshold & pct.1 >0.1)
+  c0$gene<-rownames(c0)
+  
+  # intersection of positives markers:
+  gene_list<-intersect(c0$gene,pos_gene$gene)
+  
+ dir.create(paste0(outdir,"/DEed_genes"))
+filtered_df<-filter_relevant_iso(merged_iso,list=gene_list,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = paste0(outdir,"/DEed_genes"),more_than_one_iso = T)
+
+
+list_filt2<-unique(filtered_df$gene_name)
+
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+
+res<-list(raw_df=filtered_df)
+
+
+for (gene in list_filt2) {
+ 
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir,"/DEed_genes"),
+      marker_list
+      )}
+
+if (select_DE==FALSE) { # on fait aussi la liste des gènes non restreinte aux gènes qui sont DE dans le cluster x
+  filtered_df<-filter_relevant_iso(merged_iso,list=pos_gene$gene,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = outdir,more_than_one_iso = T)
+
+
+
+list_filt2<-unique(filtered_df$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+for (gene in list_filt2) {
+
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir),
+      marker_list
+    )}
+}
+res$filtered_df=filtered_df
+return(res)
+}
+
+
+```
+
+
+test sur le cluster 3
+```{r}
+foi<-features_of_interest(merged_gene,
+                          merged_iso,
+                          cluster=3,
+                          select_DE = F)
+```
+
+
+test sur le cluster 4
+```{r}
+foi<-features_of_interest(merged_gene,
+                          merged_iso,
+                          cluster=4,
+                          select_DE = T,
+                          log2FC_threshold = 0.75)
+```
+
+
+test sur le cluster 5 
+```{r}
+foi<-features_of_interest(merged_gene,
+                          merged_iso,
+                          cluster=5,
+                          select_DE = T,
+                          log2FC_threshold = 1)
+```
+
+pas assez de S24 dans le 5 pour faire un DE sample 
+
+
+test sur le cluster 6 
+```{r}
+foi<-features_of_interest(merged_gene,
+                          merged_iso,
+                          cluster=6,
+                          select_DE = T,
+                          log2FC_threshold = 1)
+```
+idem y a que des R 
+
+
+
+test sur le cluster 0 
+```{r}
+foi<-features_of_interest(merged_gene,
+                          merged_iso,
+                          cluster=0,
+                          select_DE = T,
+                          log2FC_threshold = 1)
+```
+
+# test autre approche: DE_sample transcrits
+
+```{r}
+
+select_DE=FALSE
+cluster=3
+x=cluster
+outdir<-paste0(rootdir,"/",x,"_de_transcrits")
+dir.create(outdir)
+
+
+#gene level: dimplot and venn diagramm
+sub<-subset(merged_gene, subset= clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at gene level")))
+  plot_venn(sub,output=outdir,sample=x,type = "gene")
+  
+#isoform level: dimplot and venn diagramm
+sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=outdir,sample=x)
+
+  
+  #DEA between the sample within the cluster:
+ #sub<- PrepSCTFindMarkers(sub, assay = "SCT")
+  res1<-DE_samples(sub, output_dir =outdir, sample_name = unique(sub$sample),PrepSCT = T,type = "isoform",topn = 50)
+  res1$heatmap # these gene markers per conditions can only reflect the DEed genes in the global set and not only in the cluster
+   pos_gene<-res1$markers %>%
+    filter(avg_log2FC>0)%>%
+    group_by(cluster)%>%
+    arrange(desc(avg_log2FC))%>%
+    slice_head(n=500)
+   
+  # that's why we calculate the genes that are specific to this cluster, and intersect the two list. if the option select_DE is set to FALSE, the raw list of DEed genes across the sample will also be returned. 
+  Idents(merged_gene)<-"clusters"
+  c0<-FindMarkers(merged_gene,ident.1 = x) %>%
+    filter(p_val_adj<0.05 & avg_log2FC > log2FC_threshold & pct.1 >0.1)
+  c0$feat<-rownames(c0)
+  
+  # intersection of positives markers:
+  gene_list<-pos_gene %>% mutate(
+      gene_name = sub(".*--", "",gene))|> 
+    filter(gene_name %in% c0$feat) %>%
+    pull(gene)
+    
+  
+ dir.create(paste0(outdir,"/DEed_genes"))
+ 
+#### adaptation of the filter_relevant_iso_funcction:
+ 
+ filter_relevant_iso2<-function(seu_obj, #!! mettre l'objet isoformes!!
+                              expr_threshold = 1,
+                              cell_threshold = 100,
+                              more_than_one_iso=FALSE,
+                              list # a list of features of interest
+                              ){
+  
+
+  df<- data.frame(feature= Features(seu_obj))  
+  # split transcript ids into gene and transcript id
+  pseudobulk_data <- df %>% 
+    mutate(
+      gene_name = sub(".*--", "",feature))|> 
+    mutate(transcript_id=sub("--.*", "",feature))%>%
+    filter(feature %in% list)
+  #  Count the number of isoforms per gene
+  isoform_count_per_gene <- pseudobulk_data %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) 
+  # filter those with two or more isoforms
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+  
+  feat_list1<-pseudobulk_data %>%
+    filter(gene_name %in% list_filt1) %>%
+    pull(feature)
+    # filter isoforms that are expressed above a specified threshold in a specified number of cells
+expr_matrix <- LayerData(seu_obj, assay = "SCT",layer  = "data")  
+feature_counts <- Matrix::rowSums(expr_matrix > expr_threshold) # calculate the number of cells where each feature is above the cell threshold
+df_expr <- data.frame( # and store the result in a dataframe
+  feature = names(feature_counts),
+  n_cells_expressed = feature_counts,
+  row.names = NULL
+)
+# filter out the transcripts that express two isoforms and more and that are expressed in enough cells
+df_filt2<-df_expr %>% mutate(gene_name = sub(".*--", "",feature),
+                   transcript_id=sub("--.*", "",feature)) %>%
+  filter((feature %in% feat_list1) & (n_cells_expressed > cell_threshold )
+         ) 
+print(df_filt2)
+ 
+
+if (more_than_one_iso) { # filter the gene list in order to keep only the genes that have two features or more that pass the filters 
+    # compute the proportion of isoforms that pass the filters for each gene (may be used later but nor yet)
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+gene_pass<-isoform_count_per_gene_pass %>%
+  filter(n_isoforms_pass >1) %>%
+  pull(gene_name)
+df_filt2<-df_filt2 %>%
+  filter(gene_name %in% gene_pass)
+}
+return(df_filt2)
+
+}
+ 
+ 
+filtered_df<-filter_relevant_iso2(merged_iso,list=gene_list,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = paste0(outdir,"/DEed_genes"),more_than_one_iso = T)
+
+
+list_filt2<-unique(filtered_df$gene_name) 
+
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+
+res<-list(raw_df=filtered_df)
+
+
+for (gene in list_filt2) {
+ 
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir,"/DEed_genes"),
+      marker_list
+      )}
+
+if (select_DE==FALSE) { # on fait aussi la liste des gènes non restreinte aux gènes qui sont DE dans le cluster x
+  filtered_df<-filter_relevant_iso(merged_iso,list=pos_gene$gene,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = outdir,more_than_one_iso = T)
+
+
+
+list_filt2<-unique(filtered_df$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+for (gene in list_filt2) {
+
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir),
+      marker_list
+    )}
+}
+res$filtered_df=filtered_df
+```
+
+
+
+test clsuter 4 :
+
+```{r}
+
+select_DE=TRUE
+cluster=4
+x=cluster
+log2FC_threshold=0.5
+outdir<-paste0(rootdir,"/",x,"_de_transcrits")
+dir.create(outdir)
+
+
+#gene level: dimplot and venn diagramm
+sub<-subset(merged_gene, subset= clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at gene level")))
+  plot_venn(sub,output=outdir,sample=x,type = "gene")
+  
+#isoform level: dimplot and venn diagramm
+sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0(" cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=outdir,sample=x)
+
+  
+  #DEA between the sample within the cluster:
+ #sub<- PrepSCTFindMarkers(sub, assay = "SCT")
+  res1<-DE_samples(sub, output_dir =outdir, sample_name = unique(sub$sample),PrepSCT = T,type = "isoform",topn = 50)
+  res1$heatmap # these gene markers per conditions can only reflect the DEed genes in the global set and not only in the cluster
+   pos_gene<-res1$markers %>%
+    filter(avg_log2FC>0)%>%
+    group_by(cluster)%>%
+    arrange(desc(avg_log2FC))%>%
+    slice_head(n=500)
+   
+  # that's why we calculate the genes that are specific to this cluster, and intersect the two list. if the option select_DE is set to FALSE, the raw list of DEed genes across the sample will also be returned. 
+  Idents(merged_gene)<-"clusters"
+  c0<-FindMarkers(merged_gene,ident.1 = x) %>%
+    filter(p_val_adj<0.05 & avg_log2FC > log2FC_threshold & pct.1 >0.1)
+  c0$feat<-rownames(c0)
+  
+  # intersection of positives markers:
+  gene_list<-pos_gene %>% mutate(
+      gene_name = sub(".*--", "",gene))|> 
+    filter(gene_name %in% c0$feat) %>%
+    pull(gene)
+    
+  
+ dir.create(paste0(outdir,"/DEed_genes"))
+ 
+#### adaptation of the filter_relevant_iso_funcction:
+ 
+ filter_relevant_iso2<-function(seu_obj, #!! mettre l'objet isoformes!!
+                              expr_threshold = 1,
+                              cell_threshold = 100,
+                              more_than_one_iso=FALSE,
+                              list # a list of features of interest
+                              ){
+  
+
+  df<- data.frame(feature= Features(seu_obj))  
+  # split transcript ids into gene and transcript id
+  pseudobulk_data <- df %>% 
+    mutate(
+      gene_name = sub(".*--", "",feature))|> 
+    mutate(transcript_id=sub("--.*", "",feature))%>%
+    filter(feature %in% list)
+  #  Count the number of isoforms per gene
+  isoform_count_per_gene <- pseudobulk_data %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) 
+  # filter those with two or more isoforms
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+  
+  feat_list1<-pseudobulk_data %>%
+    filter(gene_name %in% list_filt1) %>%
+    pull(feature)
+    # filter isoforms that are expressed above a specified threshold in a specified number of cells
+expr_matrix <- LayerData(seu_obj, assay = "SCT",layer  = "data")  
+feature_counts <- Matrix::rowSums(expr_matrix > expr_threshold) # calculate the number of cells where each feature is above the cell threshold
+df_expr <- data.frame( # and store the result in a dataframe
+  feature = names(feature_counts),
+  n_cells_expressed = feature_counts,
+  row.names = NULL
+)
+# filter out the transcripts that express two isoforms and more and that are expressed in enough cells
+df_filt2<-df_expr %>% mutate(gene_name = sub(".*--", "",feature),
+                   transcript_id=sub("--.*", "",feature)) %>%
+  filter((feature %in% feat_list1) & (n_cells_expressed > cell_threshold )
+         ) 
+print(df_filt2)
+ 
+
+if (more_than_one_iso) { # filter the gene list in order to keep only the genes that have two features or more that pass the filters 
+    # compute the proportion of isoforms that pass the filters for each gene (may be used later but nor yet)
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+gene_pass<-isoform_count_per_gene_pass %>%
+  filter(n_isoforms_pass >1) %>%
+  pull(gene_name)
+df_filt2<-df_filt2 %>%
+  filter(gene_name %in% gene_pass)
+}
+return(df_filt2)
+
+}
+ 
+ 
+filtered_df<-filter_relevant_iso2(merged_iso,list=gene_list,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = paste0(outdir,"/DEed_genes"),more_than_one_iso = T)
+
+
+list_filt2<-unique(filtered_df$gene_name) 
+
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+
+res<-list(raw_df=filtered_df)
+
+
+for (gene in list_filt2) {
+ 
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir,"/DEed_genes"),
+      marker_list
+      )}
+
+if (select_DE==FALSE) { # on fait aussi la liste des gènes non restreinte aux gènes qui sont DE dans le cluster x
+  filtered_df<-filter_relevant_iso(merged_iso,list=pos_gene$gene,more_than_one_iso = T)
+dot_plot_switch(merged_iso, filtered_genes_df = filtered_df, output_dir = outdir,more_than_one_iso = T)
+
+
+
+list_filt2<-unique(filtered_df$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- filtered_df %>% pull(feature)
+
+for (gene in list_filt2) {
+
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =paste0(outdir),
+      marker_list
+    )}
+}
+res$filtered_df=filtered_df
+```
+
+
+
+
+
+
+
+
+
+Isoviz can help exploring the isoforms and their functionnal impact:
+```{r}
+
+lapply(names(subset_list), function(x){ 
+
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  subset_list[[x]], 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+#dir.create(paste0(rootdir,"/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/isoviz/Pseudobulk_exp_merged_iso_",x,".csv"), row.names = FALSE)})
+```

@@ -1,0 +1,1483 @@
+---
+title: "Unsupervised"
+output: html_document
+date: "2025-07-15"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+ordi="inserm-root"
+dir.create(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist"))
+rootdir=paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist")
+setwd(rootdir)  # Set this to correct location
+#source("/media/labct/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/DE-analysis.R"))
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R"))
+library(ComplexHeatmap)
+library(circlize)
+library(enrichR)
+```
+
+
+méthode de regression sur les gènes histo et ribo choisie: ? on retire les histo/ribo
+intégration: non
+cf ggdocs pour expliquer méthode en détail. 
+
+```{r}
+merged_iso<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_gene.rds"))
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+merged_gene$sample <- factor(merged_gene$sample , levels = c("ctrl", "S24", "R"))
+
+```
+
+
+il faut d'abord relier les cellules au clustering fait dans le gene level:
+
+```{r}
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+```
+
+
+# approche non supervisée
+
+## composition des clusters
+diagramme composition en échantillon de chaque cluster en version stack, car les derniers clusters sont plus petits, c’est peut être normal que les premiers semblent avoir une meilleure répartition.
+
+```{r eval=FALSE}
+props<-lapply(c(merged_gene), function(x){ 
+  md<-x[[]]
+  # 2. Compter les cellules par cluster et par échantillon
+counts <- md %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+# 3. Calculer la proportion dans chaque cluster
+props <- counts %>%
+  group_by(seurat_clusters) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+  return(props)
+  })
+
+props[[1]]$dataset<-"merged gene"
+#props[[2]]$dataset<-"integrated gene"
+
+combined_props <- bind_rows(props)
+
+# Tracer les histogrammes comparés
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position =  "stack") +  # Barres empilées
+  facet_wrap(~dataset) +  # Un graphique par dataset
+  ylab("nombre cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  #scale_y_continuous(labels = scales::percent_format()) +
+  ggtitle("Proportions d'échantillons par cluster merged")
+```
+
+
+
+```{r}
+combined_props <- combined_props %>%
+  group_by(dataset, seurat_clusters) %>%
+  mutate(prop_within_cluster = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    label = ifelse(prop_within_cluster >= 0.05, paste0(round(prop_within_cluster * 100), "%"), NA)  # seuil de lisibilité
+  )
+combined_props$sample <- factor(combined_props$sample , levels = c("ctrl", "S24", "R"))
+
+
+# Plot avec barres empilées (nombre de cellules) + labels de proportions
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white", size = 3, fontface = "bold", na.rm = TRUE
+  ) +
+  facet_wrap(~dataset) +
+  ylab("Nombre de cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  ggtitle("Proportions d'échantillons par cluster (en % sur chaque cluster)")
+```
+
+
+# pour l'integrated:
+
+```{r fig.width=10}
+integrated_gene<-readRDS(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist/no_ribo_hist/merge_integration/regressed_obj_gene_integrated.rds"))
+
+integrated_gene$sample <- factor(merged_gene$sample , levels = c("ctrl", "S24", "R"))
+
+
+props<-lapply(c(merged_gene, integrated_gene), function(x){ 
+  md<-x[[]]
+  # 2. Compter les cellules par cluster et par échantillon
+counts <- md %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+# 3. Calculer la proportion dans chaque cluster
+props <- counts %>%
+  group_by(seurat_clusters) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+  return(props)
+  })
+
+props[[1]]$dataset<-"merged gene"
+props[[2]]$dataset<-"integrated gene"
+
+combined_props <- bind_rows(props)
+
+# Tracer les histogrammes comparés
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position =  "stack") +  # Barres empilées
+  facet_wrap(~dataset) +  # Un graphique par dataset
+  ylab("nombre cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  #scale_y_continuous(labels = scales::percent_format()) +
+  ggtitle("Proportions d'échantillons par cluster merged")
+
+
+
+
+
+
+
+combined_props <- combined_props %>%
+  group_by(dataset, seurat_clusters) %>%
+  mutate(prop_within_cluster = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    label = ifelse(prop_within_cluster >= 0.05, paste0(round(prop_within_cluster * 100), "%"), NA)  # seuil de lisibilité
+  )
+combined_props$sample <- factor(combined_props$sample , levels = c("ctrl", "S24", "R"))
+
+
+# Plot avec barres empilées (nombre de cellules) + labels de proportions
+plot<-ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white", size = 3, fontface = "bold", na.rm = TRUE
+  ) +
+  facet_wrap(~dataset) +
+  ylab("Number of cells per cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  ggtitle("Sample proportions per cluster ( % of each cluster)")
+plot(plot)
+ggsave(plot = plot,
+       filename = "/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/results_rapport/2dimplot merge-integration_clusters/sample_prop_per_cluster_merged_integ.png")
+```
+
+
+ s’explique aussi par le processus biolo d’apparition de résistance et de traitement, bcp de cellules meurent et d’autres s’adaptent et à partir de 4 c’est un trait de résistance qui favorise la clusterisation
+si on suppose ça, on peut regarder quels sont les gènes et isoformes en communs à ces 3 clusters; ils sont susceptibles de rendre les cellules résistantes au S63 et on peut analyser le processus d'acquisition  de résistance par mcf7 
+
+
+
+```{r}
+dir.create(paste0(rootdir, "/unsupervised"))
+```
+
+## interpretation biologique des clusters
+
+on cherche des clusters qui ont une identité particulière ou qui vivent un switch d’identité au travers des conditions
+Comment on fait ça? 
+
+DE gène + enrichr sur le set global, cluster par cluster
+en prenant une condition à la fois: on veut voir le changement de l’enrichissement condition par condition
+on fait donc une heatmap par condition , en ligne les cluster et en colonne des termes de pathway choisis qui sont présents dans les conditions
+une case correspond au score enrichR dans ce cluster pour ce pathway
+on peut aussi faire un dendrogramme / clusterisation des clusters pour rapprocher ceux qui se rassemblent, ou clusteriser selon les pathways
+en prenant les 3 conditions à la fois et avec un bandeau en haut qui indique la condition, on voit si certaines conditions se regroupent en fonction de leur pathways
+
+*tracé diagramme de Venn et identification de gènes d'intérêts en communs dans les clusters résistants*
+
+```{r}
+Idents(merged_gene)<-"clusters"
+gene_mark<-FindAllMarkers(merged_gene, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                 logfc.threshold = 1, min.pct = 0.20,
+                                only.pos = FALSE) %>% 
+  dplyr::filter(p_val_adj < 0.05) %>%
+  filter(cluster==4|cluster==5|cluster==6)
+
+list_pos<-lapply(c(4,5,6), function(x){
+  markers<-gene_mark %>% filter(cluster==x & (avg_log2FC>0))%>% 
+    pull(gene)
+  return(markers)
+})
+list_neg<-lapply(c(4,5,6), function(x){
+  markers<-gene_mark %>% filter(cluster==x & (avg_log2FC<0))%>% 
+    pull(gene)
+  return(markers)
+})
+
+names(list_pos)<-c("4","5","6")
+names(list_neg)<-c("4","5","6")
+
+ vd<-ggVennDiagram(list_pos) +labs(title = "over-expressed genes in resistant clusters" )
+  #ggsave(filename = paste0(paste0(rootdir, "/unsupervised/",sample,type,".png"),vd)
+  print(vd)
+  
+ vd<-ggVennDiagram(list_neg) +labs(title = "under-expressed genes in resistant clusters" )
+  #ggsave(filename = paste0(paste0(rootdir, "/unsupervised/",sample,type,".png"),vd)
+  print(vd)
+```
+
+on réupère ceux qui apparaissent dans au moins deux clusters différents
+
+```{r}
+gene_counts_pos <- table(unlist(lapply(list_pos, unique)))
+shared_genes_pos <- names(gene_counts_pos[gene_counts_pos >= 2])
+print(shared_genes_pos)
+run_enrichR(input = shared_genes_pos,
+            sample="overexpressed456",
+            output_path = paste0(rootdir, "/unsupervised"))
+
+
+gene_counts_neg <- table(unlist(lapply(list_neg, unique)))
+shared_genes_neg <- names(gene_counts_neg[gene_counts_neg >= 3])
+print(shared_genes_neg)
+run_enrichR(input = shared_genes_neg,
+            sample="underexpressed456",
+            output_path = paste0(rootdir, "/unsupervised"))
+```
+enrichissement pas super interessant pour over
+mais on a sous expression de pathway impliqués dans réponse au stress et mitochondrie!
+
+et après on regarde leurs transcrits et on identifie ceux qui sont spécifiques à la résistance (on procède de la même manière qu'en analyse supervisée)
+
+fonction pour le filtre:
+```{r}
+filter_iso<-function(gene_list,
+           iso_obj,
+           seuil_expr=1,
+           seuil_cell=100) {
+  
+  merged_iso<-iso_obj
+df<- data.frame(feature= Features(merged_iso))  
+  #1 split transcript ids into gene and transcript id
+  pseudobulk_data <- df %>% 
+    mutate(
+      gene_name = sub(".*--", "",feature))|> 
+    mutate(transcript_id=sub("--.*", "",feature))
+  
+  
+  
+  # 2. Count the number of isoforms per gene in our gene list
+  isoform_count_per_gene <- pseudobulk_data %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) %>%
+    filter(gene_name %in% gene_list)
+  
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+ 
+
+
+
+expr_matrix <- LayerData(merged_iso, assay = "SCT",layer  = "data")  
+
+# Calcul du nombre de cellules où chaque feature est exprimée au-dessus du seuil
+feature_counts <- Matrix::rowSums(expr_matrix > seuil_expr)
+
+
+df_expr <- data.frame(
+  feature = names(feature_counts),
+  n_cells_expressed = feature_counts,
+  row.names = NULL
+)
+
+
+
+
+df_filt2<-df_expr %>% mutate(gene_name = sub(".*--", "",feature),
+                   transcript_id=sub("--.*", "",feature)) %>%
+  filter((gene_name %in% list_filt1) & (n_cells_expressed > seuil_cell )
+         ) 
+df_filt2
+
+# calcul de la proportion d'iso qui passent les seuils
+isoform_count_per_gene_pass <- df_filt2 %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms_pass = n_distinct(feature))
+
+pass_prop <-isoform_count_per_gene %>% full_join(isoform_count_per_gene_pass, by ="gene_name") %>%
+  replace_na(replace=list(n_isoforms_pass=0)) %>%
+  mutate(pass=n_isoforms_pass/n_isoforms)
+
+#print(pass_prop%>%filter(pass>0))
+
+return(df_filt2)}
+
+```
+
+```{r}
+df_gene_filt_pos<-filter_iso(shared_genes_pos,merged_iso,seuil_cell = 300)
+df_gene_filt_pos
+
+
+df_gene_filt_neg<-filter_iso(shared_genes_neg,merged_iso,seuil_cell = 500)
+df_gene_filt_neg
+```
+
+dotplot pour visualiser les switchs entre les conditions pour genes *surexprimés*
+
+```{r}
+
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+Idents(merged_iso)<-"sample"
+
+for (gene in unique(df_gene_filt_pos$gene_name)) {
+  
+  plot_features_list <- grep(paste0("--",gene,"$"), df_gene_filt_pos$feature, value = TRUE)
+  dplot<-DotPlot(object = merged_iso, #cols = c("green", "blue","red"), 
+                features =plot_features_list, #split.by = "sample"
+                )+
+scale_x_discrete(guide = guide_axis(n.dodge=length(plot_features_list)))
+  print(dplot)
+  ggsave(plot = dplot,
+         filename =paste0(rootdir,"/unsupervised/intersection/dotplot_overexpressed",gene,".png") )
+                
+}
+
+```
+??
+
+
+
+dotplot pour visualiser les switchs entre les conditions pour genes *sousexprimés*
+
+on remet un flitre pour ne voir que ceux qui ont plusieurs isoformes exprimés en quantité suffisante
+
+```{r}
+
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+Idents(merged_iso)<-"sample"
+
+
+isoform_count_per_gene <- df_gene_filt_neg %>%
+    group_by(gene_name) %>%
+    summarise(n_isoforms = n_distinct(transcript_id)) 
+  
+list_filt1<- isoform_count_per_gene %>%
+  filter(n_isoforms>=2)%>%
+  pull(gene_name)
+
+
+df_gene_filt_neg<-df_gene_filt_neg%>%
+  filter(gene_name %in% list_filt1)
+
+for (gene in unique(df_gene_filt_neg$gene_name)) {
+  
+  plot_features_list <- grep(paste0("--",gene,"$"), df_gene_filt_neg$feature, value = TRUE)
+  dplot<-DotPlot(object = merged_iso, #cols = c("green", "blue","red"), 
+                features =plot_features_list, #split.by = "sample"
+                )+
+scale_x_discrete(guide = guide_axis(n.dodge=length(plot_features_list)))
+  print(dplot)
+  ggsave(plot = dplot,
+         filename =paste0(rootdir,"/unsupervised/intersection/dotplot_underexpressed",gene,".png") )
+                
+}
+
+```
+features plots avec les focntions:
+```{r}
+#en filtrant les isoformes à plotter
+
+df_filtered<-filter_relevant_iso(merged_iso, more_than_one_iso = T, list=shared_genes_neg)
+dot_plot_switch(merged_iso, more_than_one_iso = T,filtered_genes_df = df_filtered, output_dir = paste0(rootdir,"/unsupervised/intersection/dotplot_function_underexpressed"))
+for (gene in df_filtered$gene_name) {
+  plot_feature_iso2(merged_iso, gene,
+                   sample_name="filtered",
+                   output_dir = paste0(rootdir,"/unsupervised/intersection/featureplot_function_underexpressed"),
+                   marker_list = df_filtered$feature,
+                   label=F)
+}
+```
+
+
+
+## selection d'un cluster d'intérêt: enrichissment et heatmap
+
+DE gène + enrichr sur le set global, cluster par cluster
+*on travaille d'abord sur le set global*
+
+```{r}
+Idents(merged_gene)<-"clusters"
+gene_mark<-FindAllMarkers(merged_gene, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.20,
+                                only.pos = TRUE) %>% 
+  dplyr::filter(p_val_adj < 0.05) 
+  #%>%filter(cluster==4|cluster==5|cluster==6)
+list<-lapply(0:6, function(x){
+  markers<-gene_mark %>% filter(cluster==x)%>% 
+   pull(gene)
+  return(markers)
+})
+names(list)<-0:6
+```
+
+- faire enrichr avec background sur la list
+(- pour chaque enriched, filtre sur la p-val et nob de gènes >=1)
+
+```{r}
+bckg<-Features(merged_gene)
+
+enriched_list<-lapply(list, function(x) {
+  input=x
+websiteLive <- getOption("enrichR.live")
+
+if (websiteLive) {
+  listEnrichrSites()
+  setEnrichrSite("Enrichr") # Human genes
+}
+#select databases
+dbs <- c("GO_Molecular_Function_2025", "GO_Cellular_Component_2025", 
+         "GO_Biological_Process_2025","Reactome_Pathways_2024")
+bckg<-Features(merged_gene)
+
+#query
+
+if (websiteLive) {
+    enriched_bg <- enrichr(input, dbs, background=bckg)
+   
+}
+gene_number_treshold=1
+enriched_bg<-lapply(names(enriched_bg), function(x){
+  return(enriched_bg[[x]]%>% mutate(dbs=x))
+})
+enriched_bg<-bind_rows(enriched_bg)%>% 
+  
+  mutate(gene_number = str_count(Genes, ";")+1 ) %>%
+  filter(gene_number>=gene_number_treshold)
+  
+return(enriched_bg)
+
+})
+names(enriched_list)<-names(list)
+
+```
+
+- compilation dans le même dataframe avec annotation par cluster
+
+```{r}
+enriched_list<-lapply(names(enriched_list), function(x) {
+  df<-enriched_list[[x]]
+  df<-df %>% mutate(cluster=x)
+  return(df)
+})
+names(enriched_list)<-names(list)
+
+enrich_df<-bind_rows(enriched_list)
+write_csv(enrich_df, file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_whole_set.csv"))
+```
+
+
+```{r}
+
+#- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+enrich_mat<-enrich_df%>%
+  filter(Adjusted.P.value <0.05) %>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat)<-enrich_mat$cluster
+
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat <- as.matrix(enrich_mat)  # s’assure que c’est bien une matrice
+
+#- heatmap avec le combined score
+library(circlize)
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+median=median(enrich_df$Combined.Score)
+col_fun = colorRamp2(c(min, median, 1000), c("green", "grey", "red"))
+#col_fun(seq(-3, 3))
+Heatmap(enrich_mat, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = 0:6,
+        cluster_rows = F,
+        cluster_columns = F)
+```
+
+
+
+#subset go term
+- choisir une liste de GO term pour la heatmap: intersection entre tous les go term associés à l'apoptose, ferroptose, stress, senescence, mitochondrie et ceux qui sont retrouvé de manière significative (cf filtre ci dessus) dans les données
+
+
+```{r}
+
+
+enrich_mat_sub <- as.matrix(enrich_mat[,grep("mitocho|death|apopt|stress|ferrop", colnames(enrich_mat), value = TRUE, ignore.case = TRUE)])  
+
+
+library(circlize)
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+median=median(enrich_df$Combined.Score)
+col_fun = colorRamp2(c(min, median, 1000), c("green", "grey", "red"))
+#col_fun(seq(-3, 3))
+Heatmap(enrich_mat_sub, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        #column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = 0:6,
+        cluster_rows = F,
+        cluster_columns = F,
+        column_names_rot = 45, column_names_side = "top")
+```
+ici met bien en évidence ferroptose du cluster 3
+-comment clusteriser les go term entre eux? avec le c-score ou de manière forcée en fonction de leur sens?
+essai de clustering sur la premiere heatmap 
+pour ça il faut adapter les NA car ils ne sont pas pris en compte pour le calcul de distance
+
+
+#*et seulement sur les pathways?*
+
+
+```{r}
+bckg<-Features(merged_gene)
+
+enriched_list<-lapply(list, function(x) {
+  input=x
+websiteLive <- getOption("enrichR.live")
+
+if (websiteLive) {
+  listEnrichrSites()
+  setEnrichrSite("Enrichr") # Human genes
+}
+#select databases
+dbs <- c(#"GO_Biological_Process_2025",
+  "Reactome_Pathways_2024")
+bckg<-Features(merged_gene)
+
+#query
+
+if (websiteLive) {
+    enriched_bg <- enrichr(input, dbs, background=bckg)
+   
+}
+gene_number_treshold=1
+enriched_bg<-bind_rows(enriched_bg)%>% 
+  filter(Adjusted.P.value <0.05) %>%
+  mutate(gene_number = str_count(Genes, ";")+1 ) %>%
+  filter(gene_number>=gene_number_treshold)
+  
+return(enriched_bg)
+
+})
+names(enriched_list)<-names(list)
+
+```
+
+- compilation dans le même dataframe avec annotation par cluster
+
+```{r}
+enriched_list<-lapply(names(enriched_list), function(x) {
+  df<-enriched_list[[x]]
+  df<-df %>% mutate(cluster=x)
+  return(df)
+})
+names(enriched_list)<-names(list)
+
+enrich_df<-bind_rows(enriched_list)
+```
+
+- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+```{r}
+enrich_mat<-enrich_df%>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat)<-enrich_mat$cluster
+```
+
+
+- heatmap avec le combined score
+
+
+```{r}
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat <- as.matrix(enrich_mat)  # s’assure que c’est bien une matrice
+
+
+library(circlize)
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+median=median(enrich_df$Combined.Score)
+col_fun = colorRamp2(c(min, median, 1000), c("green", "grey", "red"))
+#col_fun(seq(-3, 3))
+Heatmap(enrich_mat, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = 0:6,
+        cluster_rows = F,
+        cluster_columns = F)
+
+```
+
+essai de clustering sur la premiere heatmap 
+pour ça il faut adapter les NA car ils ne sont pas pris en compte pour le calcul de distance
+
+```{r}
+enrich_mat[is.na(enrich_mat)] <- -100
+col_fun = colorRamp2(c(-100, 0, 1000), c("lightblue", "white", "red"))
+Heatmap(enrich_mat, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = 0:6,
+        #cluster_rows = F,
+        cluster_columns = F)
+```
+*filter on score*
+```{r}
+enrich_mat_highscore<-enrich_df%>%
+  filter(Combined.Score>100) %>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat_highscore)<-enrich_mat_highscore$cluster
+```
+
+
+```{r}
+
+enrich_mat_highscore <- as.matrix(enrich_mat_highscore[,-1])  # enlève la première colonne "cluster"
+enrich_mat_highscore <- apply(enrich_mat_highscore, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat_highscore <- as.matrix(enrich_mat_highscore)  # s’assure que c’est bien une matrice
+
+
+library(circlize)
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+median=median(enrich_df$Combined.Score)
+col_fun = colorRamp2(c(min, median, 1000), c("green", "grey", "red"))
+#col_fun(seq(-3, 3))
+
+Heatmap(enrich_mat_highscore, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        #column_labels = rep(".", length(colnames(enrich_mat_highscore))),
+        row_labels = 0:6,
+        cluster_rows = F,
+        cluster_columns = F)
+
+
+
+```
+
+# pval heatmap
+essayer un autre manière: 
+on utilise la pval plutot que le score et avec un filtre moins stringent pour aussi garder les pas significatifs (mettre un gap dans les couleurs pour le seuil de significativité)
+
+
+
+```{r}
+
+#- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+enrich_mat<-enrich_df%>%
+  #filter(Adjusted.P.value <0.05) %>%
+  select(Term, cluster, Adjusted.P.value) %>%
+  pivot_wider(names_from = Term, values_from = Adjusted.P.value)
+rownames(enrich_mat)<-enrich_mat$cluster
+
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat <- as.matrix(enrich_mat)  # s’assure que c’est bien une matrice
+
+#- heatmap avec le combined score
+library(circlize)
+min=0
+max=0.05
+middle=0.01
+col_fun = colorRamp2(c(min, middle, max), c("green", "grey", "red"))
+#col_fun(seq(-3, 3))
+Heatmap(enrich_mat, 
+        name = "annotation heatmap", 
+        col = col_fun, 
+        na_col = "white",
+        column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = 0:6,
+        cluster_rows = F,
+        cluster_columns = F)
+```
+
+=========> pas très instructif on garde le filtre sur seuil de significativité et le c-score============
+
+
+```{r}
+
+```
+
+# subset condition
+
+```{r eval=FALSE}
+
+sub_list<-SplitObject(merged_gene, split.by = "sample")
+bckg<-Features(merged_gene)
+
+ht_list<-lapply(names(sub_list), function(sample_name) {
+ sample_name="S24" #(tests)
+
+seu_obj<-sub_list[[sample_name]]
+Idents(seu_obj)<-"clusters"
+gene_mark<-FindAllMarkers(seu_obj, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                 logfc.threshold = 0.5, min.pct = 0.10,
+                                only.pos = TRUE) %>% 
+  dplyr::filter(p_val_adj < 0.05) 
+ 
+list<-lapply(0:6, function(x){
+  markers<-gene_mark %>% filter(cluster==x)%>% 
+    pull(gene)
+  return(markers)
+})
+names(list)<-0:6
+
+
+enriched_list<-lapply(list, function(x) {
+  x<-list[["1"]]#(tests)
+  
+  
+   if (length(x)>0){
+  input=x
+websiteLive <- TRUE #getOption("enrichR.live")
+
+if (websiteLive) {
+  listEnrichrSites()
+  setEnrichrSite("Enrichr") # Human genes
+}
+#select databases
+dbs <- c("GO_Molecular_Function_2025", "GO_Cellular_Component_2025", 
+         "GO_Biological_Process_2025","Reactome_Pathways_2024")
+
+
+#query
+
+if (websiteLive) {
+    enriched_bg <- enrichr(input, dbs, background=bckg)
+   
+}
+gene_number_treshold=1
+
+enriched_bg<-lapply(names(enriched_bg), function(x){
+  return(enriched_bg[[x]]%>% mutate(dbs=x))
+})
+enriched_bg<-bind_rows(enriched_bg)%>% 
+  
+  mutate(gene_number = str_count(Genes, ";")+1 ) %>%
+  filter(gene_number>=gene_number_treshold)
+  
+return(enriched_bg)
+
+} else {
+   # message("Erreur dans enrichR : ", e$message)
+    return(data.frame(
+  Term = character(),
+  Rank=character(),
+  P.value = double(),
+  Adjusted.P.value = double(),
+  Old.P.value = double(),
+  Old.Adjusted.P.value = double(),
+  Odds.Ratio= double(),
+  Combined.Score= double(),
+  Genes = character(),
+  dbs = character(),
+  gene_number = double(),
+  cluster=character(),
+  stringsAsFactors = FALSE
+)) 
+}
+
+})
+names(enriched_list)<-names(list)
+
+
+
+
+#- compilation dans le même dataframe avec annotation par cluster
+
+enriched_list<-lapply(names(enriched_list), function(x) {
+  df<-enriched_list[[x]]
+  df<-df %>% mutate(cluster=x)
+  return(df)
+})
+names(enriched_list)<-names(list)
+
+enrich_df<-bind_rows(enriched_list)
+write_csv(enrich_df, file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+
+
+#- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+enrich_mat<-enrich_df%>%
+  filter(Adjusted.P.value <0.05) %>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat)<-enrich_mat$cluster
+row_labels<-enrich_mat$cluster
+
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat <- as.matrix(enrich_mat)  # s’assure que c’est bien une matrice
+
+#- heatmap avec le combined score
+
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+median=median(enrich_df$Combined.Score)
+col_fun = colorRamp2(c(min, median, 1000), c("green", "white", "red"))
+#col_fun(seq(-3, 3))
+ht<-Heatmap(enrich_mat, 
+        name = sample_name, 
+        col = col_fun, 
+        na_col = "lightblue",
+        column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = row_labels,
+        cluster_rows = F,
+        cluster_columns = F)
+draw(ht)
+return(ht)
+
+})
+```
+en prenant une condition à la fois: on veut voir le changement de l’enrichissement condition par condition
+on fait donc une heatmap par condition , en ligne les cluster et en colonne des termes de pathway choisis qui sont présents dans les conditions
+une case correspond au score enrichR dans ce cluster pour ce pathway
+
+```{r}
+
+ht_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+
+
+#- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+enrich_mat<-enrich_df%>%
+  filter((Adjusted.P.value <0.05) & (dbs %in% c("Reactome_Pathways_2024"#,"GO_Biological_Process_2025"
+                                                )) & (Rank %in% 1:5)) %>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat)<-enrich_mat$cluster
+row_labels<-enrich_mat$cluster
+
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+enrich_mat <- as.matrix(enrich_mat)  # s’assure que c’est bien une matrice
+
+#- heatmap avec le combined score
+
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+#median=median(enrich_df$Combined.Score)
+median=20
+min=0
+max=2000
+col_fun = colorRamp2(c(min, median, max), c("green", "white", "red"))
+#col_fun(seq(-3, 3))
+ht<-Heatmap(enrich_mat, 
+        name = sample_name, 
+        col = col_fun, 
+        na_col = "lightblue",
+       # column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = row_labels,
+        cluster_rows = F,
+        cluster_columns = F,
+        column_names_rot = 45,
+       column_names_side = "top")
+draw(ht)
+return(ht)
+
+})
+
+
+```
+
+
+on se concentre sur les termes qui peuvent nous interesser
+```{r fig.width=12, fig.height=6}
+#- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
+enrich_mat<-enrich_df%>%
+  filter((Adjusted.P.value <0.05) & (dbs %in% c("Reactome_Pathways_2024","GO_Biological_Process_2025")) ) %>%
+  select(Term, cluster, Combined.Score) %>%
+  pivot_wider(names_from = Term, values_from = Combined.Score)
+rownames(enrich_mat)<-enrich_mat$cluster
+row_labels<-enrich_mat$cluster
+
+
+enrich_mat <- as.matrix(enrich_mat[,-1])  # enlève la première colonne "cluster"
+enrich_mat <- apply(enrich_mat, 2, as.numeric)  # convertit chaque colonne en numérique
+pattern <- "mitocho|death|apopt|stress|ferrop|p53|bcl|caspas|tnf|trai|fas|bak|bid|escape|evas|senescen|autophag|pyropt|necros|cytotox|granzym|perforin|survival|prolif|oxidative"
+enrich_mat <- as.matrix(enrich_mat[,grep(pattern, colnames(enrich_mat), value = TRUE, ignore.case = TRUE)])  
+#- heatmap avec le combined score
+
+min=min(enrich_df$Combined.Score)
+max=max(enrich_df$Combined.Score)
+#median=median(enrich_df$Combined.Score)
+median=20
+min=0
+max=2000
+col_fun = colorRamp2(c(min, median, max), c("green", "white", "red"))
+#col_fun(seq(-3, 3))
+ht<-Heatmap(enrich_mat, 
+        name = sample_name, 
+        col = col_fun, 
+        na_col = "lightblue",
+       # column_labels = rep(".", length(colnames(enrich_mat))),
+        row_labels = row_labels,
+        cluster_rows = F,
+        cluster_columns = F,
+        column_names_rot = 45,
+       column_names_side = "top")
+draw(ht)
+
+
+png(paste0(rootdir,"/unsupervised/ht_apop_",sample_name,".png"), width = 1900, height = 1200, res = 150)
+draw(ht)
+dev.off()
+```
+
+
+
+```{r fig.width=12, fig.height=10}
+ht<-Heatmap(t(enrich_mat), 
+        name = sample_name, 
+        col = col_fun, 
+        na_col = "lightblue",
+       # column_labels = rep(".", length(colnames(enrich_mat))),
+        column_labels = row_labels,
+        cluster_rows = F,
+        cluster_columns = F,
+        column_names_rot = 0,
+       row_names_side = "right"
+       )
+draw(ht)
+```
+
+on retrouve ferroptose dans le cluster 3 
+plus grande concentration dans le cluster 5
+
+# test des fonctions
+
+```{r}
+enrich_heatmap(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"))
+enrich_heatmap(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),show_labels = F)
+
+```
+
+
+sur les 3 conditions pour gènes surexprimés:
+
+```{r fig.width=12, fig.height=10}
+ht_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"))
+  draw(ht)
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"))
+  draw(ht)
+  ht<-apopt_heatmap(enrich_df, sample_name)
+  draw(ht)
+})
+
+```
+
+avec reactome:
+```{r fig.width=12, fig.height=10}
+ht_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  
+
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 5)
+  draw(ht)
+  return(ht)
+})
+
+ht_list[[1]] %v% ht_list[[2]]%v% ht_list[[3]]
+```
+
+
+avec biological process
+
+
+```{r fig.width=12, fig.height=10}
+ht_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  
+
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 5)
+  draw(ht)
+  return(ht)
+})
+
+ht_list[[1]] %v% ht_list[[2]]%v% ht_list[[3]]
+```
+
+avec apoptose
+
+```{r fig.width=12, fig.height=15}
+ht_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  
+
+  ht<-apopt_heatmap(enrich_df, sample_name)
+  draw(ht)
+  return(ht)
+})
+
+draw(ht_list[[1]] %v% ht_list[[2]]%v% ht_list[[3]],
+      column_title ="Apoptotosis related terms")
+
+
+
+```
+
+
+et avec tout le set:
+
+```{r fig.width=12, fig.height=10}
+sample_name="whole_set"
+ enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  
+
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 15)
+  draw(ht)
+  ht<-enrich_heatmap(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 15)
+  draw(ht)
+  ht<-apopt_heatmap(enrich_df, sample_name)
+  draw(ht)
+```
+
+
+
+
+
+on peut aussi faire un dendrogramme / clusterisation des clusters pour rapprocher ceux qui se rassemblent, ou clusteriser selon les pathways
+(en prenant les 3 conditions à la fois et avec un bandeau en haut qui indique la condition, on voit si certaines conditions se regroupent en fonction de leur pathways) (ou pas)
+
+
+
+
+
+```{r fig.width=14, fig.height=12}
+df_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  enrich_df$Odds.Ration<-NULL
+  enrich_df<-enrich_df %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+
+sample_name="3samples"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE)
+  draw(ht)
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE)
+  draw(ht)
+
+```
+
+
+
+essai sans le dendro qui clusterise bizarrement (sans doute à cause des disparités dans le c-score)
+enregistré: evolution_id_cluster_ht.png?fixed_size=1
+```{r fig.width=14, fig.height=12}
+df_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  enrich_df$Odds.Ration<-NULL
+  enrich_df<-enrich_df %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+sample_name="3samples"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+
+```
+
+
+on va mtn ajouter à ça la signature quand on regarde chaque cluster au sein du set global, pour voir si la signature globale est la même que la signature condition par condtion.
+
+```{r fig.width=16, fig.height=12}
+df_list<-lapply(c("ctrl","S24","R"), function(sample_name) {
+  enrich_df<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+  enrich_df$Odds.Ration<-NULL
+  enrich_df<-enrich_df %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df)
+})
+
+enrich_df<-bind_rows(df_list)
+
+sample_name="whole_set"
+enrich_df_glob<-read_csv( file = paste0(rootdir,"/unsupervised/enrichment_per_cluster_",sample_name,".csv"))
+enrich_df_glob<-enrich_df_glob %>% 
+    mutate(Sample_name=paste0(cluster,"_glob"))
+  
+enrich_df<-bind_rows(enrich_df, enrich_df_glob)
+
+
+sample_name="3samples+global"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht)
+
+```
+
+
+et apop:
+
+```{r fig.width=16, fig.height=15}
+ ht<-apopt_heatmap_dendro(enrich_df,sample_name, show_labels = TRUE)
+  draw(ht)
+```
+
+
+# signatures genes sous exprimés
+
+```{r message=FALSE, include=FALSE}
+enrich_df_list<-prep_enrich_df_split(seu_obj=merged_gene, 
+                                     overexpressed = FALSE)
+
+enrich_df_glob<-prep_enrich_df_glob(seu_obj=merged_gene, 
+                                     overexpressed = FALSE)
+
+```
+
+```{r fig.width=16, fig.height=15}
+df_list<-lapply(names(enrich_df_list), function(sample_name) {
+  #enrich_df_samp$Odds.Ration<-NULL
+  enrich_df_samp<-enrich_df_list[[sample_name]]
+  enrich_df_samp<-enrich_df_samp %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df_samp)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+enrich_df_glob<-enrich_df_glob %>% 
+    mutate(Sample_name=paste0(cluster,"_glob"))
+  
+enrich_df<-bind_rows(enrich_df, enrich_df_glob)
+
+
+sample_name="3samples+global"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025")
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="Reactome_Pathways_2024")
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025+Reactome_Pathways_2024")
+  
+  
+   ht<-apopt_heatmap_dendro(enrich_df,sample_name, show_labels = TRUE)
+  draw(ht,column_title ="Apoptosis related terms")
+
+```
+
+# signatures genes sur exprimés (on refait)
+
+```{r message=FALSE}
+enrich_df_list<-prep_enrich_df_split(seu_obj=merged_gene, 
+                                     overexpressed = T)
+
+enrich_df_glob<-prep_enrich_df_glob(seu_obj=merged_gene, 
+                                     overexpressed = T)
+
+```
+
+```{r fig.width=16, fig.height=15}
+
+df_list<-lapply(names(enrich_df_list), function(sample_name) {
+  #enrich_df_samp$Odds.Ration<-NULL
+  enrich_df_samp<-enrich_df_list[[sample_name]]
+  enrich_df_samp<-enrich_df_samp %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df_samp)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+enrich_df_glob<-enrich_df_glob %>% 
+    mutate(Sample_name=paste0(cluster,"_glob"))
+  
+enrich_df<-bind_rows(enrich_df, enrich_df_glob)
+
+
+sample_name="3samples+global"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025")
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="Reactome_Pathways_2024")
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE)
+  draw(ht,column_title ="GO_Biological_Process_2025+Reactome_Pathways_2024")
+  
+  
+   ht<-apopt_heatmap_dendro(enrich_df,sample_name, show_labels = TRUE)
+  draw(ht,column_title ="Apoptosis related terms")
+
+```
+
+
+
+source(paste0("/media/",ordi,"/P4/Single_cell_rna_seq_analyses_eline/project/R/visualisation_tools_and_pathway_analysis.R"))
+
+
+
+- enrichr sur gènes DE par cluster
+prep isoviz
+
+```{r}
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  merged_iso, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "gene_clusters"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+dir.create(paste0(rootdir,"/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/isoviz/Pseudobulk_exp_merged_iso.csv"), row.names = FALSE)
+```
+
+
+```{r}
+knitr::include_graphics(list.files(path = file.path(rootdir, "isoviz"),
+                                   pattern = "\\.png$", 
+                                   full.names = TRUE))
+```
+
+
+```{r}
+knitr::include_graphics("/home/labct/Téléchargements/IsoVis_ENSG00000143384.png")
+```
+
+avec ces résultats + l'analyse d'enrichissement faite précédement, on sélectionne 3 clusters d'intérêt:
+- cluster 0 (d'après l'analyse isoviz vue précédemment, bcp de gènes apoptotiques ont des transcripts qui ressortent dans ce cluster )
+- cluster 4 (de nombreuses signatures apoptotiques / en lien avec la mitochondrie)
+- cluster 3 (présente 2 termes associés à la régulation de la ferroptose)
+
+l'objectif maintenant va être de disséquer ces clusters sample par sample pour identifier de nouveaux transcripts dont le gènes n'est pas forcément relié à l'apoptose mais le fait que ça soit dans un cluster apoptotique pourrait laisser penser que le trnascript a un rôle apoptotique ou inversement.
+
+on veut donc:
+- diagramme de venn sample /sample pour chaque cluster
+- approche supervisée: on a une liste de gènes connus qu'on veut investiguer, on va faire des features plots en split selon les conditions de ces gènes là avec un umap du set total. l'umap aura un labelling selon le cluster pour voir aussi où est exprimé le transcript/gene que l'on regarde.
+- approche non supervisée où on va regarder les listes de gènes et transcripts DE et les enrichissements
+
+
+...
+
+(à partir des features plots: filtres sur les gènes qui sont exprimés dans bcp de cellules et qui ont un certain seuil d'expression / cellule? 
+exemple percentage feature set/ cellule pour chaque gene et on garde un gène si dans x cellules il a plus de tant de % d'expression du gène, le seuil peut être fixé avec vln plot
+filtre sur le nombre d'isoformes exprimés?
+on regarde ce qui se passe avec les isoformes de ces gènes avec isoviz ou feature plot, et quelles associations existent pour ce gène? 
+on peut faire la même chose au sein d'un cluster pour voir si des choses ressortent? 
+par exemple intéressant de montrer que se concentrer sur un cluster permet de faire ressortir un gène que l'on aurait pas vu sinon? 
+que fait on une fois que l'on a un gène suffisment exprimé (dans un cluster par exemple) avec des isoformes différentiellement exprimés entre les conditions?) 
+
+
+non supervisée: objectif = découvrir une nouvelle cible
+par exemple : L'objectif est d'identifier des gènes qui ne parraissent pas avoir un rôle dans la résistance/ l'apoptose mais dont les cellules resistantes expriment des isoformes qui ont un rôle différent du rôle de l'isoforme classique. 
+donc
+on se place au sein d'un cluster d'intérêt qui a une certaine coloration ex apoptose
+filtre sur les gènes exprimés (cf au dessus de tel seuil dans x % des cellules) et sur par exemple au moins 2 transcripts
+avec des transcripts exprimés dans R et pas dans ctrl par exemple? ou dont l'expression croit ou décroit de manière significative avec l'apparition de la résistance? 
+=> on veut une liste de nouvelles cibles à tester?
+
+On a rajouté les annotations sur les clusters identifiés précédemment, mtn on subset les objets. 
+
+```{r}
+
+subset_list<- lapply(c(0,3,4), function(x) {
+  sub<-subset(merged_iso, subset= gene_clusters==x )
+  sub
+  print(DimPlot(sub, group.by="sample")+labs(caption = paste0("unintegrated cluster ",x," subset at isoform level")))
+  plot_venn(sub,output=paste0(rootdir,"/focus_cluster"),sample=x)
+  return(sub)
+})
+names(subset_list)<-c(0,3,4)
+```
+
+
+
+Etape suivante: DE_sample sur ces subsets pour comparer les transcripts exprimés dans les 3 conditions. 
+
+
+```{r}
+lapply(subset_list, function(x){ 
+  res1<-DE_samples(x, output_dir = paste0(rootdir, "/focus_cluster"), sample_name = unique(x$sample),PrepSCT = T)
+  #print(res1$heatmap)
+  })
+
+```
+
+```{r}
+lapply(subset_list, function(x){
+
+
+#seu_obj<-subset_list[["0"]]
+seu_obj<-x
+output_dir=paste0(rootdir, "/focus_cluster")
+sample_name=unique(x$gene_clusters)
+#sample_name="0"
+topn=15
+type="isoform"
+PrepSCT=T
+  
+  DefaultAssay(object = seu_obj) <- "SCT"
+  
+  if (PrepSCT==TRUE) {  seu_obj<-PrepSCTFindMarkers(seu_obj, assay = "SCT", verbose = TRUE)
+}
+  
+  res=list()
+  
+  Idents(seu_obj)<-"sample"
+  
+  all_markers <- FindAllMarkers(seu_obj, do.print = FALSE,
+                                assay="SCT", slot="data",
+                                # logfc.threshold = 0.5, min.pct = 0.20,
+                                only.pos = FALSE) %>% dplyr::filter(p_val_adj < 0.05)
+  res$markers<-all_markers
+  write.csv(all_markers, file=paste0(output_dir,"/all_markers_",sample_name,type,".csv"))
+  
+  head(all_markers)
+  
+  
+  
+  #then heatmap 
+  all_markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = topn) %>%
+    ungroup() -> top_markers
+  
+  heatmap<-DoHeatmap(seu_obj, slot="data", 
+                     assay="SCT",
+                     features = top_markers$gene,group.by = "sample") + labs(caption = paste0("Top markers for each sample at ",type," level"))
+  
+ ggsave(filename=paste0(output_dir,"/heatmap_top_markers_",sample_name,type,".png"),
+         heatmap)
+  #print(heatmap) 
+  res$heatmap<-heatmap
+  return(res)})
+```
+
+
+Isoviz can help exploring the isoforms and their functionnal impact:
+```{r}
+
+lapply(names(subset_list), function(x){ 
+
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  subset_list[[x]], 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+#dir.create(paste0(rootdir,"/isoviz"))
+write.csv(pseudobulk_data_isoviz_format, paste0(rootdir,"/isoviz/Pseudobulk_exp_merged_iso_",x,".csv"), row.names = FALSE)})
+```
+

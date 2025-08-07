@@ -1,0 +1,348 @@
+---
+title: "run_seurat_preprocessig"
+output: html_document
+date: "2025-06-26"
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+```{r}
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist"
+#setwd(rootdir)  # Set this to correct location
+
+#source("/media/inserm-root/P4/Single_cell_rna_seq_analyses_eline/project/R/seurat_processing.R")
+library(Seurat)
+library(tidyverse)
+library(biomaRt)
+```
+
+```{r}
+SQANTI <- read.csv(paste0(rootdir,"/sqanti/sqanti3_results/isoforms_classification.txt"), sep ='\t')
+head(SQANTI, 3)
+
+seu_obj<-readRDS(paste0(rootdir,"/merge_integration/cell_cycle_regression/regressed_obj_isoform.rds"))
+```
+
+
+```{r}
+
+
+#lets aggeragte the expresstion data by cell type 
+counts <- AggregateExpression(
+  seu_obj, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+#we can use the pseudobulk_data counts:
+# Select cell type columns and gather into long format
+long_data <- pseudobulk_data %>%
+  pivot_longer(
+    cols = starts_with("SCT."),
+    names_to = "cell_type",
+    values_to = "expression"
+  )
+
+# Filter for non-zero expression to identify genes and isoforms expressed in each cell type
+filtered_data <- long_data %>%
+  filter(expression > 0) %>%
+  dplyr::select(cell_type, transcript_id, gene_id) %>%
+  distinct()
+
+# Calculate unique gene and isoform counts for each cell type
+cell_type_summary <- filtered_data %>%
+  group_by(cell_type) %>%
+  summarise(
+    num_genes = n_distinct(gene_id),
+    num_isoforms = n_distinct(transcript_id)
+  ) %>%
+  pivot_longer(cols = c(num_genes, num_isoforms), 
+               names_to = "Category", 
+               values_to = "Count")
+
+# Plot the data
+p1 <- ggplot(cell_type_summary, aes(x = cell_type, y = Count, fill = Category)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black", width = 0.8) +
+  theme_minimal() +
+  labs(title = "Number of genes and isoforms \n per sample",
+       x = "Sample",
+       y = "Count") +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_blank()
+  )
+
+p1
+```
+
+
+
+
+
+```{r}
+
+#adapt the pseudo_bulk data to match the sqanti data
+
+pseudobulk_data<-pseudobulk_data%>% 
+    mutate(
+      transcript_id = str_replace_all(transcript_id, "-",  "_"))
+
+# plot the structural category per cell type
+  merged_data <- merge(pseudobulk_data, SQANTI, 
+                     by.x = "transcript_id", 
+                     by.y = "isoform", 
+                     all.x = TRUE)
+ 
+  # Pivot pseudobulk data to long format for cell types
+long_data <- merged_data %>%
+  pivot_longer(
+    cols = starts_with("SCT"),
+    names_to = "cell_type",
+    values_to = "expression"
+  )
+
+# Generate outr new df thatw e can use for plotting attributes deffiend by cell type
+filtered_data <- long_data %>%
+  filter(expression > 0) %>%
+  distinct()
+
+# Calculate unique counts of genes and isoforms per structural category and cell type
+category_summary <- filtered_data %>%
+  group_by(cell_type, structural_category, subcategory, coding) %>%
+  summarise(
+    num_genes = n_distinct(gene_id),
+    num_isoforms = n_distinct(transcript_id),
+    .groups = "drop"
+  )
+
+# Plot number of isoforms per structural category for each cell type
+p2 <- ggplot(category_summary, aes(x = cell_type, y = num_isoforms, fill = structural_category)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Isoforms by structural category \n across samples",
+    x = "Sample",
+    y = "Number of Isoforms",
+    fill = "Structural Category"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+p3 <- ggplot(category_summary, aes(x = cell_type, y = num_isoforms, fill = subcategory)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Isoforms by structural subcategory \n across samples",
+    x = "samples",
+    y = "Number of Isoforms",
+    fill = "subcategory"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+
+p4 <- ggplot(category_summary, aes(x = cell_type, y = num_isoforms, fill = coding)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Proportion of coding isoforms \n across samples",
+    x = "samples",
+    y = "Proportion of Isoforms",
+    fill = "Structural Category"
+  ) +
+  scale_y_continuous(labels = scales::percent) +  # This will show y-axis as percentages
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+
+#Plots
+p2
+p3
+p4
+
+p5<-cowplot::plot_grid(p1, p2, p3, p4, ncol = 2)
+p5
+```
+
+
+Les NA ne sont pas présents dans le SQANTI classification.txt. probablement parce que ce dernier a été créé à partir du .gff de FLAMES qui contient moins d'isoformes que la matrice de comptage d'où sont tirées les pseudobulk data
+
+
+# Cell type specific isoforms
+
+```{r}
+# Filter the data based on the expression cutoff
+# Set expression cutoff threshold
+expression_cutoff <- 5
+max_expression_in_all_other_cells_types = 1
+
+# Filter isoforms based on the new criteria
+exclusive_isoforms <- long_data %>%
+  group_by(transcript_id) %>%
+  filter(
+    # Only one cell type where expression > cutoff
+    sum(expression > expression_cutoff) <= 1,
+    # Ensure all other cell types have 0 expression
+    all(expression < max_expression_in_all_other_cells_types | expression > expression_cutoff)
+  ) %>%
+  ungroup()
+
+# Count the unique isoforms per cell type
+# Adjust counting logic
+exclusive_isoforms_count <- exclusive_isoforms %>%
+  group_by(cell_type) %>%
+  summarise(
+    unique_isoforms = sum(expression > expression_cutoff)  # Count only isoforms with valid expression
+  ) %>%
+  ungroup()
+
+# Plot the results
+ggplot(exclusive_isoforms_count, aes(x = cell_type, y = unique_isoforms, fill = cell_type)) +
+  geom_bar(stat = "identity", color = "black", width = 0.8) +
+  theme_minimal() +
+  labs(
+    title = "Number of isoforms unique \n to each cell type",
+    x = "Cell Type",
+    y = "Number of Unique Isoforms"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_blank()
+  )# Filter the data based on the expression cutoff
+
+```
+
+# meta data about isoforms with BiomaRt
+
+```{r}
+library("biomaRt")
+
+exclusive_isoforms_uniq <- exclusive_isoforms %>%
+  filter(expression >= max_expression_in_all_other_cells_types) %>%
+  arrange(desc(expression))
+
+exclusive_isoforms_uniq$transcript_id <- sub("\\..*", "", exclusive_isoforms_uniq$transcript_id)
+
+# Retrieve gene biotype from Ensembl
+  mart <- useMart(biomart = "ensembl", 
+                 dataset = "hsapiens_gene_ensembl") 
+  
+  biotype_info_transcript <- getBM(attributes = c("ensembl_transcript_id", "transcript_is_canonical", 'transcript_biotype', 'transcript_length'),
+                                   filters = 'ensembl_transcript_id',
+                                   values = exclusive_isoforms_uniq$transcript_id,
+                                   mart = mart)
+  
+  #merge excluive isoforms and biomart data togehter 
+  merged_biomart_data <- merge(exclusive_isoforms_uniq, biotype_info_transcript, 
+                     by.x = "transcript_id", 
+                     by.y = "ensembl_transcript_id", 
+                     all.x = TRUE)
+  
+# Prepare the summary data
+category_summary <- merged_biomart_data %>%
+  group_by(cell_type, transcript_biotype) %>%
+  summarise(num_isoforms = n(), .groups = "drop") %>%
+  group_by(cell_type) %>%
+  mutate(proportion = num_isoforms / sum(num_isoforms)) %>%
+  ungroup()
+
+
+# Ensure consistent factor order for cell_type and transcript_biotype
+category_summary <- category_summary %>%
+  mutate(
+    cell_type = factor(cell_type, levels = unique(cell_type)),
+    transcript_biotype = factor(transcript_biotype, levels = c("TEC","TR_C_gene","TR_V_pseudogene","lncRNA","miRNA","misc_RNA","non_stop_decay","nonsense_mediated_decay","processed_pseudogene","protein_coding","protein_coding_CDS_not_defined","rRNA_pseudogene","retained_intron","ribozyme","snRNA"                         ,"snoRNA","transcribed_processed_pseudogene","transcribed_unprocessed_pseudogene","unprocessed_pseudogene",NA,"rRNA","transcribed_unitary_pseudogene","Mt_tRNA"))
+  )
+
+# Create the plot 
+p5 <- ggplot(category_summary, aes(x = cell_type, y = proportion, fill = transcript_biotype)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.8) +
+  geom_text(aes(label = scales::percent(proportion, accuracy = 0.1)), 
+            position = position_fill(vjust = 0.5), size = 2) +
+  theme_minimal() +
+  labs(
+    title = "BioMart Structural Categories \n cell specific isoforms",
+    x = "Cell Type",
+    y = "Proportion of Isoforms",
+    fill = "BioMart structual Category"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 6)
+  )
+
+p6 <- ggplot(merged_biomart_data, aes(x = cell_type, y = transcript_length, fill = cell_type)) +
+  geom_violin(trim = TRUE, alpha = 0.6) +  # Use violin plot for distribution
+  geom_boxplot(width = 0.1, outlier.size = 0.5, alpha = 0.8) +  # Add boxplot for summary statistics
+  theme_minimal() +
+  labs(
+    title = "Transcript length distribution \n across cell types",
+    x = "Cell Type",
+    y = "Transcript Length (nt)",
+    fill = "Cell Type"
+  ) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.position = "none"
+  )
+p5
+p6
+#cowplot::plot_grid(p5, p6, ncol = 1)
+```
+
