@@ -21,7 +21,9 @@ run_flames<-function(fastq,
   outdir<-paste0(rootdir,"/flames/",sample_name)
   
   
-  config_file <- FLAMES::create_config(outdir, do_barcode_demultiplex = FALSE,type="sc_3end",multithread_isoform_identification=TRUE,oarfish_quantification=FALSE)
+  config_file <- FLAMES::create_config(outdir, do_barcode_demultiplex = FALSE,type="sc_3end",multithread_isoform_identification=TRUE,
+                                      oarfish_quantification=FALSE,
+                                      bambu_isoform_identification=TRUE)
   config <- jsonlite::fromJSON(config_file)
   genome_bam <- rownames(minimap2_align(
     config = config, fa_file = genome_fa, fq_in = fastq, annot = annot,
