@@ -1,18 +1,15 @@
 # the purpose of these functions is to run flames and create seurat-ready count matrixe at genes and transcript levels
-# the arguments passed to this script should be rootdir , sample_name and path_to_project
+
 
 library(FLAMES)
 
 
-#args = commandArgs(trailingOnly=TRUE)
-#rootdir=args[1]
-#sample_name=args[2]
-#path_to_project=args[3]
 setwd(rootdir)  # Set this to correct location
 
-
-run_flames<-function(fastq,
-                     sample_name,
+# this function wraps up the FLAMES pipeline.
+# the inputs should be the BLAZE merged matched reads and the standard FLAMES inputs
+run_flames<-function(fastq, # path to the fastq
+                     sample_name,# to create an appropriate output folder
                      annot=paste0(path_to_project,"./references/gencode.v48.annotation.gtf.gz"),
                      genome_fa=paste0(path_to_project,"./references/genome.fa") ){
   library(FLAMES)
@@ -43,8 +40,11 @@ run_flames<-function(fastq,
 
 
 #Count matrices processing
+#This allows the creation of a "dictionnary" with gene name and gene id information
+# it shoul only be run once before processing all the samples
 
-import_ref_gtf<-function(reference_gtf="/home/labct/Documents/stage_eline_denis/gencode.v48.annotation.gtf.gz"){
+import_ref_gtf<-function(reference_gtf="/home/labct/Documents/stage_eline_denis/gencode.v48.annotation.gtf.gz" # path to the annotation reference in a gtf format. It should be the one used for FLAMES
+                        ){
   # Import reference gtf file with gene symbols
   gtf2 <- import(reference_gtf)
   gtf2_df <- as.data.frame(gtf2)
@@ -56,9 +56,11 @@ import_ref_gtf<-function(reference_gtf="/home/labct/Documents/stage_eline_denis/
   return(unique_gene_symbol)
 }
 
+# this should be run once per sample to create transcript level and optionally gene-level counts
+
 make_transcript_level_counts <- function( sample_name,
                                           transcript_count_matrix,
-                                          unique_gene_symbol,
+                                          unique_gene_symbol, # the output from the import_ref_gtf function
                                           output_dir="./counts",
                                           make_gene_level_counts=TRUE) {
   
