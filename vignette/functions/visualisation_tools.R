@@ -13,10 +13,10 @@ library(cowplot)
 library(grid)
 library(patchwork)
 library(gridExtra)
-#library(gprofiler2)
+library(gprofiler2)
 #library(EnhancedVolcano)
 #library(glmGamPoi)
-  library(enrichR)
+  #library(enrichR)
 library(ggVennDiagram)
 
 library(ComplexHeatmap)
@@ -293,9 +293,7 @@ enrich_heatmap_dendro<-function(enrich_df,
                                 rank=10,
                                 show_labels=TRUE,
                                 dendro_col=F,
-                                dendro_rows=F,
-                                row_fontsize=8,
-                                col_fontsize=12) {
+                                dendro_rows=F) {
   
   
   #- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
@@ -355,8 +353,6 @@ enrich_heatmap_dendro<-function(enrich_df,
               column_order = column_order,
               #column_split = factor(column_split, levels = unique(column_split)),
               column_dend_height = unit(4, "cm"),
-              row_names_gp = grid::gpar(fontsize = row_fontsize),
-              column_names_gp = grid::gpar(fontsize = col_fontsize),
               left_annotation = rowAnnotation(sample = anno_block(gp = gpar(fill = sample(x = 2:5, size = 1)),
                                                                   labels = sample_name, 
                                                                   labels_gp = gpar(col = "black", fontsize = 10))),
@@ -371,10 +367,7 @@ enrich_heatmap_dendro<-function(enrich_df,
 
 apopt_heatmap_dendro<-function(enrich_df,
                                sample_name,
-                               show_labels=TRUE,
-                               row_fontsize=10,
-                               col_fontsize=10,
-                               show_heatmap_legend=F) {
+                               show_labels=TRUE) {
   
   #- création d'une matrice avec en ligne le numéro de cluster, en colonne le go term et dans les cellules le c-score
   enrich_mat<-enrich_df%>%
@@ -432,9 +425,6 @@ apopt_heatmap_dendro<-function(enrich_df,
               column_names_side = "top",
               column_title =sample_name,
               column_order = column_order,
-              show_heatmap_legend = show_heatmap_legend,
-              row_names_gp = grid::gpar(fontsize = row_fontsize),
-              column_names_gp = grid::gpar(fontsize = col_fontsize),
               left_annotation = rowAnnotation(sample = anno_block(gp = gpar(fill = sample(x = 2:5, size = 1)),
                                                                   labels = sample_name, 
                                                                   labels_gp = gpar(col = "black", fontsize = 10))),
@@ -757,9 +747,8 @@ filter_relevant_iso<-function(seu_obj, #!! mettre l'objet isoformes!!
 dot_plot_switch<-function(seu_obj,
                           more_than_one_iso=FALSE,
                           filtered_genes_df,
-                          output_dir#,
-                          #max.percent=40
-                          ) {# has to contain a gene_name column and a feature column with the transcripts
+                          output_dir,
+                          max.percent=40) {# has to contain a gene_name column and a feature column with the transcripts
   #dotplot pour visualiser les switchs entre les conditions
   seu_obj$sample <- factor(seu_obj$sample , levels = c("ctrl", "S24", "R"))
   Idents(seu_obj)<-"sample"
@@ -783,8 +772,8 @@ dot_plot_switch<-function(seu_obj,
       scale_color_gradientn(
         colors = c("grey90", "blue"),  
         limits = c(-1, 1)
-      )
-    #+scale_size(range = c(0, 10), limits = c(0, max.percent))
+      )+
+      scale_size(range = c(0, 10), limits = c(0, max.percent))
     print(dplot)
     ggsave(plot = dplot,
            filename =paste0(output_dir,"/dotplot_",gene,".png") )
