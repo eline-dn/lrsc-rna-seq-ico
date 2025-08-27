@@ -1,0 +1,171 @@
+---
+title: "05-DA_cluster_of_interest"
+output: html_document
+---
+
+```{r}
+source("./visualisation_tools.R")
+dir.create(path = paste0(rootdir, "/unsupervised"))
+```
+
+# Load the objects
+```{r}
+merged_iso<-readRDS(paste0(rootdir,"/merge_integration/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/regressed_obj_gene.rds"))
+
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+merged_gene$sample <- factor(merged_gene$sample , levels = c("ctrl", "S24", "R"))
+
+```
+
+
+Link cells to the cluster labels obtained with clustering on the gene-level objects. 
+
+```{r}
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df|> full_join(df2, by=("cell_names"))
+head(df)
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+```
+
+According to this plot, the 4th, 5th and 6th clusters share some similarities because they are all made of mainly resistant cells. 
+```{r}
+combined_props <- combined_props %>%
+  group_by(dataset, seurat_clusters) %>%
+  mutate(prop_within_cluster = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    label = ifelse(prop_within_cluster >= 0.05, paste0(round(prop_within_cluster * 100), "%"), NA)  # seuil de lisibilité
+  )
+combined_props$sample <- factor(combined_props$sample , levels = c("ctrl", "S24", "R"))
+
+
+# Plot avec barres empilées (nombre de cellules) + labels de proportions
+ggplot(combined_props, aes(x = seurat_clusters, y = n, fill = sample)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    color = "white", size = 3, fontface = "bold", na.rm = TRUE
+  ) +
+  facet_wrap(~dataset) +
+  ylab("Nombre de cellules par cluster") +
+  xlab("Cluster") +
+  theme_minimal() +
+  ggtitle("Proportions d'échantillons par cluster (en % sur chaque cluster)")
+```
+
+
+It might be worth Looking up their similarities more closely to identify patterns and genes/isoforms specific to resistant cells. 
+
+# Enrichment analysis
+
+## Over-expressed genes/ pathway signature
+
+In order to identify whether some clusters have a specific signature or if they remain identical after treatment, we will use enrichment analysis, first on the over-expressed genes in each clusters. 
+
+The function below extracts significant pathway Terms from the Reactome and GO Term Biological Process databases that are associated with the genes over-expressed in our clusters. 
+
+```{r message=F}
+enrich_df_list<-prep_enrich_df_split(seu_obj=merged_gene, 
+                                     overexpressed = T)
+
+enrich_df_glob<-prep_enrich_df_glob(seu_obj=merged_gene, 
+                                     overexpressed = T)
+
+```
+
+
+The code below regroups all results in a single dataframe. The combined score of each pathway term in then stored in a matrix used to plot the heatmap. This allows to visualize the  biological differences between all the clusters and the evolution of each cluster over time.
+
+```{r fig.width=16, fig.height=15}
+
+df_list<-lapply(names(enrich_df_list), function(sample_name) {
+  #enrich_df_samp$Odds.Ration<-NULL
+  enrich_df_samp<-enrich_df_list[[sample_name]]
+  enrich_df_samp<-enrich_df_samp %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df_samp)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+enrich_df_glob<-enrich_df_glob %>% 
+    mutate(Sample_name=paste0(cluster,"_glob"))
+  
+enrich_df<-bind_rows(enrich_df, enrich_df_glob)
+
+
+sample_name="3samples+global"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025")
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="Reactome_Pathways_2024")
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE)
+  draw(ht,column_title ="GO_Biological_Process_2025+Reactome_Pathways_2024")
+  
+  
+   ht<-apopt_heatmap_dendro(enrich_df,sample_name, show_labels = TRUE)
+  draw(ht,column_title ="Apoptosis related terms")
+
+```
+
+## Under-expressed genes: pathway signature
+The same process is applied with under-expressed genes in order to visualize the biological processes that are under-regulated in each cell-groups. 
+
+```{r message=FALSE, include=FALSE}
+enrich_df_list<-prep_enrich_df_split(seu_obj=merged_gene, 
+                                     overexpressed = FALSE)
+
+enrich_df_glob<-prep_enrich_df_glob(seu_obj=merged_gene, 
+                                     overexpressed = FALSE)
+
+```
+
+```{r fig.width=16, fig.height=15}
+df_list<-lapply(names(enrich_df_list), function(sample_name) {
+  enrich_df_samp<-enrich_df_list[[sample_name]]
+  enrich_df_samp<-enrich_df_samp %>% 
+    mutate(Sample_name=paste0(cluster,"_",sample_name))
+  return(enrich_df_samp)
+})
+
+enrich_df<-bind_rows(df_list)
+
+
+enrich_df_glob<-enrich_df_glob %>% 
+    mutate(Sample_name=paste0(cluster,"_glob"))
+  
+enrich_df<-bind_rows(enrich_df, enrich_df_glob)
+
+
+sample_name="3samples+global"
+
+ ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("GO_Biological_Process_2025"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025")
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,databases = c("Reactome_Pathways_2024"),rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="Reactome_Pathways_2024")
+  
+  
+  ht<-enrich_heatmap_dendro(enrich_df,sample_name,rank = 150, show_labels = FALSE,dendro_col = F)
+  draw(ht,column_title ="GO_Biological_Process_2025+Reactome_Pathways_2024")
+  
+  
+   ht<-apopt_heatmap_dendro(enrich_df,sample_name, show_labels = TRUE)
+  draw(ht,column_title ="Apoptosis related terms")
+
+```

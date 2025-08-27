@@ -1,0 +1,160 @@
+---
+title: "04-DA_supervised_approach"
+output: html_document
+---
+
+```{r ,include=FALSE}
+source("./functions/visualisation_tools.R")
+```
+
+Start from the merged (i.e. unintegrated) gene and isoform objects, with no ribosomal and histonic genes and transcripts. 
+
+Load the objects:
+
+```{r}
+merged_iso<-readRDS(paste0(rootdir,"/merge_integration/regressed_obj_isoform.rds"))
+merged_gene<-readRDS(paste0(rootdir,"/merge_integration/regressed_obj_gene.rds"))
+merged_iso$sample <- factor(merged_iso$sample , levels = c("ctrl", "S24", "R"))
+merged_gene$sample <- factor(merged_gene$sample , levels = c("ctrl", "S24", "R"))
+```
+
+
+Link cells to the cluster labels obtained with clustering on the gene-level objects. 
+
+```{r}
+df<-as.data.frame(merged_gene$clusters)
+colnames(df)<-c("gene_clusters")
+df$cell_names<-rownames(df)
+
+df2<-as.data.frame(merged_iso$clusters)
+colnames(df2)<-c("iso_clusters")
+df2$cell_names<-rownames(df2)
+
+df<-df %>% full_join(df2, by=("cell_names"))
+head(df)
+
+
+merged_iso$cell_names<-rownames(merged_iso[[]])
+merged_iso[[]]<-merged_iso[[]] |> left_join(df[,c("gene_clusters","cell_names")], by="cell_names") 
+```
+
+
+
+
+Load the list of genes associated with cell death:
+```{r}
+list<-readLines("./references/liste_genes_apoptose.txt")
+print(list)
+```
+
+## Filtering the isoforms
+```{r}
+dir.create(paste0(rootdir,"/supervised_da"))
+outdir<-paste0(rootdir,"/supervised_da")
+```
+
+The following function filters the genes and isoforms based on the expression criteria described in the internship report. 
+```{r}
+df_filt2<-filter_relevant_iso(seu_obj=merged_iso, #!! mettre l'objet isoformes!!
+                              expr_threshold = 1,
+                              cell_threshold = 100,
+                              more_than_one_iso=FALSE,
+                              list, # a list genes of interest
+                              output=paste0(rootdir,"/supervised_da")
+)
+```
+
+
+
+# isoform visualisation
+
+Dotplot are used to visualize switch in isoform usage between conditions. Only the isoforms passing the previous filters are represented here. 
+
+
+```{r}
+dot_plot_switch(seu_obj=merged_iso,
+                          more_than_one_iso=FALSE,
+                          filtered_genes_df=df_filt2,
+                          output_dir=outdir)
+```
+
+
+Here, feature plots describing the expression of all the isoforms associated with a specific gene are represented. 
+```{r}
+
+list_filt2<-unique(df_filt2$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+missing_genes <- c()
+for (gene in list_filt2) {
+  tryCatch({
+    plot_feature_iso(
+      merged_iso,
+      gene = gene,
+      sample_name = "",
+      output_dir =outdir
+    )
+  }, error = function(e) {
+    message(paste0("Le gène ", gene, " n'est pas dans l'objet Seurat."))
+    missing_genes <<- c(missing_genes, gene)
+   
+  })
+}
+```
+
+Only the isoforms from a specific gene that pass the filters are represented in the feature plots below.
+```{r}
+
+list_filt2<-unique(df_filt2$gene_name)
+Idents(merged_iso)<-"gene_clusters"
+marker_list <- df_filt2 %>% pull(feature)
+
+
+for (gene in list_filt2) {
+    
+      plot_feature_iso2(
+      merged_iso,
+      gene = gene,
+      sample_name = "filtered",
+      output_dir =outdir,
+      marker_list
+    )}
+```
+
+The gene expression is quite homogeneous across the cell population. 
+
+
+## Exploration of the isoform structure with Isoviz
+
+
+```{r, eval=FALSE}
+#extract some isoform expression data to visualize in isoviz 
+counts <- AggregateExpression(
+  merged_iso, 
+  assays = "SCT", 
+  return.seurat = FALSE,
+  group.by = "sample"
+)
+head(counts$SCT)
+
+as.data.frame(counts) -> df
+row.names(df) -> df$gene
+
+#split transcript ids into gene and transcript id
+pseudobulk_data <- df %>% separate(gene, into = c("transcript_id", "gene_id"), sep = "--",  extra = "merge") 
+
+head(pseudobulk_data)
+
+
+pseudobulk_data -> pseudobulk_data_isoviz_format
+row.names(pseudobulk_data_isoviz_format) <- NULL 
+
+write.csv(pseudobulk_data_isoviz_format, paste0(outdir,"/Pseudobulk_exp_merged_iso_sample.csv"), row.names = FALSE)
+```
+
+
+```{r, eval=FALSE}
+knitr::include_graphics(list.files(path =paste0(rootdir,"/supervised"),
+                                   pattern = "\\.jpeg$", 
+                                   full.names = TRUE))
+```
+"Please be careful when interpreting pseudubulk expression data. Although the data can give you some indication of relative expression across cell types, this numbers can be affected by the number of cells in each cluster."

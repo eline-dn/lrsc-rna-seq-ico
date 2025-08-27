@@ -1,0 +1,46 @@
+---
+title: "index.Rmd"
+author: "Eline DENIS"
+date: "2025-08-18"
+output: html_document
+site: bookdown::bookdown_site
+output:
+  bookdown::gitbook:
+    toc: true
+    number_sections: true
+    split_by: section
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/media/labct/P4/Single_cell_rna_seq_analyses_eline/sc3samples_whitelist")
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Introduction
+start by running the blaze preprocessing file in the rootdir
+blabla
+pour render le bookdown:
+bookdown::render_book("index.Rmd", "bookdown::gitbook")
+
+structure du dossier vignette:
+
+
+mon_projet_bookdown/
+├── index.Rmd
+├── 01-analyse.Rmd
+├── 02-resultats.Rmd
+├── fonctions/
+│   └── fonctions.R     <- tes fonctions, pas affiché
+├── data/
+│   └── jeu.RDS         <- tes données
+├── _bookdown.yml
+├── _output.yml
+
+/scratch/nautilus/users/edenis2023@ec-nantes.fr
+
+setting a working directory for the rest of the analysis:
+```{r}
+rootdir="/media/labct/P4/Single_cell_rna_seq_analyses_eline/vignette_data"
+```

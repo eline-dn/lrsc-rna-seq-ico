@@ -1,0 +1,12 @@
+
+
+
+book_filename: "mon_tutoriel"
+language:
+  ui:
+    chapter_name: "Chapitre "
+rmd_files: [
+  "index.Rmd",
+  "01-analyse.Rmd",
+  "02-resultats.Rmd"
+]

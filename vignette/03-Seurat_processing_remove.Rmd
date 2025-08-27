@@ -1,0 +1,208 @@
+---
+title: "03-Seurat_processing_remove"
+output: html_document
+---
+
+```{r}
+source("./functions/seurat_processing.R")
+```
+# Removing ribosomal and histonic genes
+
+We won't use the objects generated in the previous step for reasons detailed in here (rapport)
+Instead, we will remove the histonic and ribosomal genes from our objects.
+We will start from the QC'ed individual seurat objects, remove histonic and ribosomal genes and preprocess them as done before, and without integration. ( merge, SCT normalisation, clustering and UMAP). 
+
+Load the objects:
+```{r}
+repertoire <-paste0(rootdir, "/QC")
+
+
+# Lister tous les fichiers .rds dans ce dossier
+fichiers_rds_gene <- list.files(path = repertoire, pattern = "^seu_obj.*gene\\.rds$", full.names = TRUE)
+fichiers_rds_iso <- list.files(path = repertoire, pattern = "^seu_obj.*isoform\\.rds$", full.names = TRUE)
+
+# Charger tous les fichiers avec readRDS et les stocker dans une liste
+liste_objets_gene <- lapply(fichiers_rds_gene, readRDS)
+liste_objets_iso <- lapply(fichiers_rds_iso, readRDS)
+
+# (Optionnel) Nommer les éléments de la liste avec les noms de fichiers sans extension
+names(liste_objets_gene) <- tools::file_path_sans_ext(basename(fichiers_rds_gene))
+names(liste_objets_iso) <- tools::file_path_sans_ext(basename(fichiers_rds_iso))
+
+```
+
+
+
+
+remove ribosomal and histonic genes:
+```{r}
+histo<-read.csv("./references/liste_genes_histones.csv")
+
+histo_genes<-histo%>% pull(Gene_Symbol)
+
+ribosomal_genes <- c(
+  "RPSA", "RPS2", "RPS3", "RPS3A", "RPS4X", "RPS4Y", "RPS5", "RPS6", "RPS7", "RPS8", 
+  "RPS9", "RPS10", "RPS11", "RPS12", "RPS13", "RPS14", "RPS15", "RPS15A", "RPS16", 
+  "RPS17", "RPS18", "RPS19", "RPS20", "RPS21", "RPS23", "RPS24", "RPS25", "RPS26", 
+  "RPS27", "RPS27A", "RPS28", "RPS29", 
+  "RPL3", "RPL4", "RPL5", "RPL6", "RPL7", "RPL7A", "RPL8", "RPL9", "RPL10", "RPL10A", 
+  "RPL11", "RPL12", "RPL13", "RPL13A", "RPL14", "RPL15", "RPL17", "RPL18", "RPL18A", 
+  "RPL19", "RPL21", "RPL22", "RPL23", "RPL23A", "RPL24", "RPL26", "RPL27", "RPL27A", 
+  "RPL28", "RPL29", "RPL30", "RPL31", "RPL32", "RPL34", "RPL35", "RPL35A", "RPL36", 
+  "RPL36A", "RPL37", "RPL37A", "RPL38", "RPL39", "RPL40", "RPL41"
+)
+list_clean_gene<-lapply(liste_objets_gene, function(x) {
+  genes_to_keep <- setdiff(rownames(x), c(histo_genes, ribosomal_genes))
+  seurat_obj_filtered_gene <- subset(x, features = genes_to_keep)
+  return(seurat_obj_filtered_gene)
+  
+})
+
+list_clean_iso<-lapply(liste_objets_iso, function(x) {
+  genes_to_remove <-c(histo_genes, ribosomal_genes)
+  regex_pattern <- paste(genes_to_remove, collapse = "|")
+  iso_to_keep <-rownames(x)[!grepl(regex_pattern, rownames(x))]
+  seurat_obj_filtered_iso <- subset(x, features = iso_to_keep)
+  return(seurat_obj_filtered_iso)
+  
+})
+
+saveRDS(list_clean_gene,paste0(rootdir, "/QC/list_clean_gene.rds"))
+saveRDS(list_clean_iso, paste0(rootdir, "/QC/list_clean_iso.rds"))
+```
+
+
+compute the number of isoform per gene on the list (gene removed)
+
+```{r}
+tab<-read_csv(paste0(rootdir,"/merge_integration_ribo_histo/merged_gene_most_iso.csv"))
+
+tab_histo<-tab[tab$gene_name %in% histo_genes,]
+write_csv(tab_histo, file=paste0(rootdir,"/merge_integration_ribo_histo/number_iso_hist_genes.csv"))
+
+tab_ribo<-tab[tab$gene_name %in% ribosomal_genes,]
+write_csv(tab_ribo, file=paste0(rootdir,"/merge_integration_ribo_histo/number_iso_ribo_genes.csv"))
+```
+# Merge and regression after regression on cell cycle genes
+The seurat objects will now be merged.
+run_regression_and_merge_v2 is adapted from the previous one to regress on cell cycle genes only.
+
+
+```{r merge_iso}
+
+sample_names<-list("ctrl","R","S24")
+
+merged_iso<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                 list_clean_iso, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+```
+
+
+
+```{r merge_gene}
+
+sample_names<-list("ctrl","R","S24")
+merged_gene<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                  list_clean_gene, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=FALSE)
+
+
+```
+
+# Integration impact
+
+Let's try to evaluate the impact of the integration process on our objects. 
+
+## Integration with RPCA
+First, integrate the objects:
+```{r int_iso}
+
+sample_names<-list("ctrl","R","S24")
+
+integ_iso<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                 list_clean_iso, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+```
+
+
+
+```{r int_gene}
+
+sample_names<-list("ctrl","R","S24")
+integ_gene<-run_regression_and_merge_v2(sample_names, # a list of the sample's names, in the right order
+                                  list_clean_gene, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration"),
+                               integrateRPCA=TRUE)
+
+
+```
+
+
+
+Looking at the UMAPs, integration does reduce some of the gene variability. However, it is difficult to know this is technical variability due to batch effect or wether this is some biological variability lost with integration. 
+
+## Integration impact: focus on cluster diversity
+In ordrer to assess the integration impact, plot of the proportion of each samples in all clusters to see whether integration affects clustering. 
+```{r}
+props<-lapply(c(merged_gene,integ_gene), function(x){ 
+  md<-x[[]]
+  # 2. Compter les cellules par cluster et par échantillon
+counts <- md %>%
+  group_by(seurat_clusters, sample) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+# 3. Calculer la proportion dans chaque cluster
+props <- counts %>%
+  group_by(seurat_clusters) %>%
+  mutate(proportion = n / sum(n)) %>%
+  ungroup()
+  return(props)
+  })
+
+props[[1]]$dataset<-"merged gene"
+props[[2]]$dataset<-"integrated gene"
+
+combined_props <- bind_rows(props)
+
+# Tracer les histogrammes comparés
+plot<-ggplot(combined_props, aes(x = seurat_clusters, y = proportion, fill = sample)) +
+  geom_bar(stat = "identity", position =  "dodge") +  # Barre côte à côte
+  facet_wrap(~dataset) +  # Un graphique par dataset
+  ylab("Proportion") +
+  xlab("Cluster") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  ggtitle("Comparaison des proportions d'échantillons par cluster merged/integrated")
+
+plot
+ggsave(plot = plot,
+       filename = paste0(rootdir,"/merge_integration/props.png"))
+
+```
+
+```{r}
+dp<-DimPlot(merged_iso, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at isoform level")
+ggsave(plot=dp, filename = paste0(rootdir,"/merge_integration/dplot_merged_iso.png"))
+
+dp<-DimPlot(merged_gene, group.by=c("clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on unintegrated object at gene level")
+ggsave(plot=dp, filename = paste0(rootdir,"/merge_integration/dplot_merged_gene.png"))
+```
+
+```{r}
+dp<-DimPlot(integ_iso, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at isoform level")
+ggsave(plot=dp, filename = paste0(rootdir,"/merge_integration/dplot_integ_iso.png"))
+
+dp<-DimPlot(integ_gene, group.by=c("rpca_clusters","sample"),combine = TRUE) +labs(caption = "Clustering and sample repartition on integrated object at gene level")
+ggsave(plot=dp, filename = paste0(rootdir,"/merge_integration/dplot_integ_gene.png"))
+```
+
+
+Since integration does not seem to produce more diverse clusters and reduce the sample bias in the clustering process, and given the fact that DEA should be done on an unintegrated assay as recommended by the Satija lab team, we will proceed to further analysis without integrating our objects. Cluster has an impact on the cluster labels used in the downstream analysis to investigate cluster identity. 
