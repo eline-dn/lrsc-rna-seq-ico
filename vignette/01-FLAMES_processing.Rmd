@@ -1,0 +1,136 @@
+---
+title: "01-FLAMES_processing"
+output: html_document
+---
+
+# Sample processing
+
+```{r, eval=FALSE}
+source("./functions/flames_wrapper.R")
+
+sample_names=c("ctrl", "S24", "R")
+fastqs<-c(paste0(rootdir,"/blaze/merged_matched_reads_mcf7_ctrl.fastq"),
+          paste0(rootdir,"/blaze/merged_matched_reads_mcf7_S24.fastq"),
+          paste0(rootdir,"/blaze/merged_matched_reads_mcf7_R.fastq")
+          ) # a list with the fastq reads, already processed with blaze for barcode identification
+names(fastqs)<-sample_names
+
+transcript_matrices<-lapply(sample_names, run_flames(fastq=fastqs[[x]],
+                                                     sample_name=x))
+names(transcript_matrices)<-sample_names
+
+gene_symbol_dic<-import_ref_gtf(reference_gtf="./references/gencode.v48.annotation.gtf.gz")
+
+dir.create(paste0(rootdir, "/counts"))
+lapply(sample_names, make_transcript_level_counts(x,
+                                                  transcript_count_matrix=transcript_matrices[[x]],
+                                                  unique_gene_symbol=gene_symbol_dic,
+                                                  output_dir=paste0(rootdir, "/counts"),
+                                                  make_gene_level_counts=TRUE
+                                                  ))
+
+
+```
+The isoform- and gene-level count matrices are stored in the 'counts' folder in 'rootdir'. They are ready to use in the seurat processing step.
+
+# Coverage computing
+Let's plot a few coverage plots about the read coverage of our transcripts.
+
+  
+```{r include=FALSE}
+library(SingleCellExperiment)
+library(FLAMES)
+library(rtracklayer)
+library(tidyverse)
+```
+
+The FLAMES packages offers a function to plot transcript coverage accross transcript lenght and varying on the transcript length. 
+```{r, eval=FALSE}
+sample_list=c("ctrl","S24","R")
+
+cov_list<-lapply(sample_list,function(x) {
+  bam=paste0(rootdir,"/flames/",x,"/realign2transcript.bam")
+  p1<-plot_coverage(bam)+labs(title = x )
+  p1
+  ggsave(filename = paste0(rootdir,"/flames/coverage_plot_",x,".png"),plot = p1)
+  return(p1)
+  
+})
+cov_list
+names(cov_list)<-sample_list
+print(cov_list)
+#saveRDS(cov_list, file = paste0(rootdir,"/flames/coverage_plots.rds"))
+```
+
+Other homemade functions to visualize transcript coverage in chromosoms eg 
+```{r fig.width=10}
+sample_list=c("ctrl","S24","R")
+lapply(sample_list,function(x) {
+  #read flames' gff file
+  gff <- import(paste0(rootdir,"/flames/",x,"/isoform_annotated.gff3"))
+  # only keep transcripts
+  transcripts <- gff[!is.na(gff$transcript_id)]
+  
+  df<-as.data.frame(transcripts)
+  df<-df[,c("seqnames","support_count","transcript_id")]
+  head(df)
+  df <- df |> mutate(support_count = as.numeric(support_count))
+
+  chrom<-df|>group_by(seqnames) |> summarise(count_per_chrom=sum(!is.na(support_count)))
+
+
+
+  chrom_mean<-df|>group_by(seqnames) |> summarise(mean_support_count = mean(support_count, na.rm = TRUE))
+  chrom_mean <- chrom_mean |>
+  mutate(mean_support_count_rounded = round(mean_support_count))
+  chrom_mean
+
+  # plot support read mean count for each chromososme
+plotmeanchrom<-ggplot(chrom_mean, aes(x = seqnames, y = mean_support_count)) +
+  geom_bar(stat = "identity", fill = "lightblue"
+           ) +
+  geom_text(
+    aes(label = mean_support_count_rounded),
+    vjust = -0.5, size = 5
+  ) +
+  labs(title = paste0(x," sample, support read per transcript mean count for each chromososme"),
+       x = "Chromosome",
+       y = "Support counts per transcript mean") +
+  theme_minimal() 
+print(plotmeanchrom)
+ggsave(filename = paste0(rootdir,"/flames/coverage_plots_chrom_",x,".png"),plotmeanchrom)
+
+# plot support_count (coverage) distribution across transcripts
+plot_coverage<-ggplot(df, aes(x = support_count)) +
+   geom_histogram(binwidth = 5, fill = "lightgreen", color = "darkgreen") +
+  geom_text(stat = "bin",
+             binwidth = 5,
+             aes(label = ..count.., y = ..count..),
+             vjust = -1, size = 3,angle = 45,nudge_x=2) +
+   scale_x_continuous(limits = c(0, 500)) +
+   labs(
+     title = paste0(x, " sample, support_count (coverage) distribution across transcripts"),
+     x = "Support Count (Coverage)",
+     y = "Number of transcripts"
+   ) +
+   theme_minimal()
+
+print(plot_coverage)
+ggsave(filename = paste0(rootdir,"/flames/coverage_plots_transcriptome_",x,".png"),plot_coverage)
+
+plot_coverage2<-ggplot(df, aes(x = transcript_id, y = support_count)) +
+     geom_bar(stat = "identity",  fill = "lightgreen", color = "darkgreen") +
+     labs(
+         title = paste0(x, " sample, support_count per transcript"),
+         x = "Transcript",
+        y = "Support Count (Coverage)"
+     ) +
+     theme_minimal() +
+     theme(
+         axis.text.x = element_blank(),   # Cache les labels X si trop nombreux
+         axis.ticks.x = element_blank()
+     )
+print(plot_coverage2)
+ggsave(filename = paste0(rootdir,"/flames/coverage_plots_transcriptome2_",x,".png"),plot_coverage2)
+})
+```
