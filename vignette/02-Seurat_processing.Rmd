@@ -1,136 +1,246 @@
 ---
-title: "01-FLAMES_processing"
+title: "02-Seurat_processing"
 output: html_document
 ---
 
-# Sample processing
+
+# QC and creation of Seurat Objects
+```{r, message=FALSE}
+source("./functions/seurat_processing.R")
+dir.create(paste0(rootdir,"/QC"))
+```
+Load the count matrices from the previous step
+```{r}
+mat_ctrl_iso  <- read.csv(paste0(rootdir,"/counts/gene_symbol_ctrltranscript_level_counts.csv"), row.names = 1)
+mat_ctrl_gene <- read.csv(paste0(rootdir,"/counts/gene_symbol_ctrlgene_level_counts.csv"), row.names = 1)
+
+mat_S24_iso   <- read.csv(paste0(rootdir,"/counts/gene_symbol_S24transcript_level_counts.csv"), row.names = 1)
+mat_S24_gene  <- read.csv(paste0(rootdir,"/counts/gene_symbol_S24gene_level_counts.csv"), row.names = 1)
+
+mat_R_iso     <- read.csv(paste0(rootdir,"/counts/gene_symbol_Rtranscript_level_counts.csv"), row.names = 1)
+mat_R_gene    <- read.csv(paste0(rootdir,"/counts/gene_symbol_Rgene_level_counts.csv"), row.names = 1)
+
+counts_ctrl <- list(
+  iso  = mat_ctrl_iso,
+  gene = mat_ctrl_gene
+)
+
+counts_S24 <- list(
+  iso  = mat_S24_iso,
+  gene = mat_S24_gene
+)
+
+counts_R <- list(
+  iso  = mat_R_iso,
+  gene = mat_R_gene
+)
+```
+
+
+Run QC on both iso-level and gene-level objects.
+This function runs a standard Seurat QC, with adaptable filters on the threshold of minimum and maximum features and UMI per cells, and on the percentage of mitochondrial genome. 
+
+```{r qc, eval=T}
+res_ctrl_iso<-perform_Seurat_QC("ctrl",
+                                counts_ctrl$iso,
+                                type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                                max.features =2000,
+                                min.features = 200,
+                                min.counts = 400,
+                                max.counts = 5000,
+                                MT = 10,
+                                npc = 15,
+                                output_path=paste0(rootdir,"/QC")
+)
+res_ctrl_iso$seu_obj
+res_ctrl_iso$features_before
+res_ctrl_iso$features_after
+res_ctrl_iso$mt_before
+res_ctrl_iso$mt_after
+res_ctrl_iso$scatter
+seurat_ctrl_iso<-res_ctrl_iso$seu_obj
+
+res_ctrl_gene<-perform_Seurat_QC("ctrl",
+                                 counts_ctrl$gene,
+                                 type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                                 max.features =2000,
+                                 min.features = 200,
+                                 min.counts = 400,
+                                 max.counts = 5000,
+                                 MT = 10,
+                                 npc = 15,
+                                 output_path=paste0(rootdir,"/QC")
+)
+res_ctrl_gene$seu_obj
+res_ctrl_gene$features_before
+res_ctrl_gene$features_after
+res_ctrl_gene$mt_before
+res_ctrl_gene$mt_after
+res_ctrl_gene$scatter
+seurat_ctrl_gene<-res_ctrl_gene$seu_obj
+
+
+
+#r S24_seu}
+res_S24_iso<-perform_Seurat_QC("S24",
+                               counts_S24$iso,
+                               type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                               max.features =2000,
+                               min.features = 200,
+                               min.counts = 400,
+                               max.counts = 5000,
+                               MT = 10,
+                               npc = 15,
+                               output_path=paste0(rootdir,"/QC")
+)
+
+res_S24_iso$seu_obj
+res_S24_iso$features_before
+res_S24_iso$features_after
+res_S24_iso$mt_before
+res_S24_iso$mt_after
+res_S24_iso$scatter
+seurat_S24_iso<-res_S24_iso$seu_obj
+
+res_S24_gene<-perform_Seurat_QC("S24",
+                                counts_S24$gene,
+                                type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                                max.features =2000,
+                                min.features = 200,
+                                min.counts = 400,
+                                max.counts = 5000,
+                                MT = 10,
+                                npc = 15,
+                                output_path=paste0(rootdir,"/QC")
+)
+res_S24_gene$seu_obj
+res_S24_gene$features_before
+res_S24_gene$features_after
+res_S24_gene$mt_before
+res_S24_gene$mt_after
+res_S24_gene$scatter
+seurat_S24_gene<-res_S24_gene$seu_obj
+
+
+
+#r R_seu}
+res_R_iso<-perform_Seurat_QC("R",
+                             counts_R$iso,
+                             type="isoform", #specify if you are working with an isoform- or a gene-level count matrix
+                             max.features =2000,
+                             min.features = 200,
+                             min.counts = 400,
+                             max.counts = 5000,
+                             MT = 10,
+                             npc = 15,
+                             output_path=paste0(rootdir,"/QC")
+)
+res_R_iso$seu_obj
+res_R_iso$features_before
+res_R_iso$features_after
+res_R_iso$mt_before
+res_R_iso$mt_after
+res_R_iso$scatter
+seurat_R_iso<-res_R_iso$seu_obj
+
+res_R_gene<-perform_Seurat_QC("R",
+                              counts_R$gene,
+                              type="gene", #specify if you are working with an isoform- or a gene-level count matrix
+                              max.features =2000,
+                              min.features = 200,
+                              min.counts = 400,
+                              max.counts = 5000,
+                              MT = 10,
+                              npc = 15,
+                              output_path=paste0(rootdir,"/QC")
+)
+
+res_R_gene$seu_obj
+res_R_gene$features_before
+res_R_gene$features_after
+res_R_gene$mt_before
+res_R_gene$mt_after
+res_R_gene$scatter
+seurat_R_gene<-res_R_gene$seu_obj
+```
+
+
+# Merge and regression after regression on cell cycle and ribosomal genes
+Only for demonstration purposes. The objects created with this function will not be used in further analysis, because the diversity in  ribosomal and histonic genes might hide some more subtle signals. 
+
+## At transcript level
+
+```{r}
+dir.create(paste0(rootdir,"/merge_integration_ribo_histo"))
+```
+
+First without interation:
+```{r merge_iso}
+seu_objects<-list(seurat_ctrl_iso,seurat_S24_iso,seurat_R_iso)
+sample_names<-list("ctrl","S24","R")
+
+merged_iso<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                 seu_objects, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration_ribo_histo"),
+                               integrateRPCA=FALSE)
+```
+
+And with integration:
+```{r}
+seu_objects<-list(seurat_ctrl_iso,seurat_S24_iso,seurat_R_iso)
+sample_names<-list("ctrl","S24","R")
+
+merged_iso<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                 seu_objects, # a list of seurat objects after QC (same order as their names)
+                                 type="isoform",
+                                 output_path=paste0(rootdir,"/merge_integration_ribo_histo"),
+                               integrateRPCA=TRUE)
+```
+
+
+The global stats on the merged objects: we plot the number of isoforms per gene and the genes with the most isoforms.
+
+```{r glob_stats}
+number_of_isoforms_per_gene(merged_iso,"merged", outdir=paste0(rootdir,"/merge_integration_ribo_histo"))
+top10_gene_with_most_iso(merged_iso,"merged", outdir=paste0(rootdir,"/merge_integration_ribo_histo"))
+```
+
+## At gene level
+
+```{r}
+seurat_ctrl_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_ctrl_gene.rds"))
+seurat_S24_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_S24_gene.rds"))
+seurat_R_gene<-readRDS(paste0(rootdir,"/QC/seu_obj_R_gene.rds"))
+```
+First without interation:
+```{r merge_gene}
+seu_objects<-list(seurat_ctrl_gene,seurat_S24_gene,seurat_R_gene)
+sample_names<-list("ctrl","S24","R")
+merged_gene<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                  seu_objects, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration_ribo_histo"),
+                               integrateRPCA=FALSE)
+
+
+```
+And with integration:
+```{r}
+seu_objects<-list(seurat_ctrl_gene,seurat_S24_gene,seurat_R_gene)
+sample_names<-list("ctrl","S24","R")
+merged_gene<-run_regression_and_merge(sample_names, # a list of the sample's names, in the right order
+                                  seu_objects, # a list of seurat objects after QC (same order as their names)
+                                  type="gene",
+                                  output_path=paste0(rootdir,"/merge_integration_ribo_histo"),
+                               integrateRPCA=TRUE)
+
+
+```
+
+These venn diagramms shows the number of features common to each sample. 
 
 ```{r, eval=FALSE}
-source("./functions/flames_wrapper.R")
-
-sample_names=c("ctrl", "S24", "R")
-fastqs<-c(paste0(rootdir,"/blaze/merged_matched_reads_mcf7_ctrl.fastq"),
-          paste0(rootdir,"/blaze/merged_matched_reads_mcf7_S24.fastq"),
-          paste0(rootdir,"/blaze/merged_matched_reads_mcf7_R.fastq")
-          ) # a list with the fastq reads, already processed with blaze for barcode identification
-names(fastqs)<-sample_names
-
-transcript_matrices<-lapply(sample_names, run_flames(fastq=fastqs[[x]],
-                                                     sample_name=x))
-names(transcript_matrices)<-sample_names
-
-gene_symbol_dic<-import_ref_gtf(reference_gtf="./references/gencode.v48.annotation.gtf.gz")
-
-dir.create(paste0(rootdir, "/counts"))
-lapply(sample_names, make_transcript_level_counts(x,
-                                                  transcript_count_matrix=transcript_matrices[[x]],
-                                                  unique_gene_symbol=gene_symbol_dic,
-                                                  output_dir=paste0(rootdir, "/counts"),
-                                                  make_gene_level_counts=TRUE
-                                                  ))
-
-
-```
-The isoform- and gene-level count matrices are stored in the 'counts' folder in 'rootdir'. They are ready to use in the seurat processing step.
-
-# Coverage computing
-Let's plot a few coverage plots about the read coverage of our transcripts.
-
-  
-```{r include=FALSE}
-library(SingleCellExperiment)
-library(FLAMES)
-library(rtracklayer)
-library(tidyverse)
-```
-
-The FLAMES packages offers a function to plot transcript coverage accross transcript lenght and varying on the transcript length. 
-```{r, eval=FALSE}
-sample_list=c("ctrl","S24","R")
-
-cov_list<-lapply(sample_list,function(x) {
-  bam=paste0(rootdir,"/flames/",x,"/realign2transcript.bam")
-  p1<-plot_coverage(bam)+labs(title = x )
-  p1
-  ggsave(filename = paste0(rootdir,"/flames/coverage_plot_",x,".png"),plot = p1)
-  return(p1)
-  
-})
-cov_list
-names(cov_list)<-sample_list
-print(cov_list)
-#saveRDS(cov_list, file = paste0(rootdir,"/flames/coverage_plots.rds"))
-```
-
-Other homemade functions to visualize transcript coverage in chromosoms eg 
-```{r fig.width=10}
-sample_list=c("ctrl","S24","R")
-lapply(sample_list,function(x) {
-  #read flames' gff file
-  gff <- import(paste0(rootdir,"/flames/",x,"/isoform_annotated.gff3"))
-  # only keep transcripts
-  transcripts <- gff[!is.na(gff$transcript_id)]
-  
-  df<-as.data.frame(transcripts)
-  df<-df[,c("seqnames","support_count","transcript_id")]
-  head(df)
-  df <- df |> mutate(support_count = as.numeric(support_count))
-
-  chrom<-df|>group_by(seqnames) |> summarise(count_per_chrom=sum(!is.na(support_count)))
-
-
-
-  chrom_mean<-df|>group_by(seqnames) |> summarise(mean_support_count = mean(support_count, na.rm = TRUE))
-  chrom_mean <- chrom_mean |>
-  mutate(mean_support_count_rounded = round(mean_support_count))
-  chrom_mean
-
-  # plot support read mean count for each chromososme
-plotmeanchrom<-ggplot(chrom_mean, aes(x = seqnames, y = mean_support_count)) +
-  geom_bar(stat = "identity", fill = "lightblue"
-           ) +
-  geom_text(
-    aes(label = mean_support_count_rounded),
-    vjust = -0.5, size = 5
-  ) +
-  labs(title = paste0(x," sample, support read per transcript mean count for each chromososme"),
-       x = "Chromosome",
-       y = "Support counts per transcript mean") +
-  theme_minimal() 
-print(plotmeanchrom)
-ggsave(filename = paste0(rootdir,"/flames/coverage_plots_chrom_",x,".png"),plotmeanchrom)
-
-# plot support_count (coverage) distribution across transcripts
-plot_coverage<-ggplot(df, aes(x = support_count)) +
-   geom_histogram(binwidth = 5, fill = "lightgreen", color = "darkgreen") +
-  geom_text(stat = "bin",
-             binwidth = 5,
-             aes(label = ..count.., y = ..count..),
-             vjust = -1, size = 3,angle = 45,nudge_x=2) +
-   scale_x_continuous(limits = c(0, 500)) +
-   labs(
-     title = paste0(x, " sample, support_count (coverage) distribution across transcripts"),
-     x = "Support Count (Coverage)",
-     y = "Number of transcripts"
-   ) +
-   theme_minimal()
-
-print(plot_coverage)
-ggsave(filename = paste0(rootdir,"/flames/coverage_plots_transcriptome_",x,".png"),plot_coverage)
-
-plot_coverage2<-ggplot(df, aes(x = transcript_id, y = support_count)) +
-     geom_bar(stat = "identity",  fill = "lightgreen", color = "darkgreen") +
-     labs(
-         title = paste0(x, " sample, support_count per transcript"),
-         x = "Transcript",
-        y = "Support Count (Coverage)"
-     ) +
-     theme_minimal() +
-     theme(
-         axis.text.x = element_blank(),   # Cache les labels X si trop nombreux
-         axis.ticks.x = element_blank()
-     )
-print(plot_coverage2)
-ggsave(filename = paste0(rootdir,"/flames/coverage_plots_transcriptome2_",x,".png"),plot_coverage2)
-})
+plot_venn(merged_gene,"gene", output=paste0(rootdir,"/merge_integration_ribo_histo"))
+plot_venn(merged_iso,"isoform")
 ```
